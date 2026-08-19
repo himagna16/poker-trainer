@@ -278,3 +278,12 @@ export function shortDescribe(score: number): string {
     default: return `${k(0)} high`;
   }
 }
+
+/**
+ * Expose the straight table so other code can ask "would one more card of rank
+ * R complete a straight?" without re-deriving the logic. Used for spotting
+ * draws when the bots decide how to play.
+ */
+export function straightHighFromMask(rankMask: number): number {
+  return STRAIGHT_HIGH[rankMask & 0x1fff];
+}
