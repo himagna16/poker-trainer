@@ -149,7 +149,7 @@ export const GLOSSARY: GlossaryEntry[] = [
   { term: 'Rags', aliases: ['air'], category: 'Hands', short: 'Worthless cards. "Air" means you have nothing at all.' },
 
   // ---------- Draws ----------
-  { term: 'Outs', aliases: ['out'], category: 'Draws',
+  { term: 'Outs', category: 'Draws',
     short: 'The specific cards left in the deck that would give you the winning hand.',
     why: 'Counting outs is the first real skill in poker. It turns "I might get there" into a number you can compare against the price.' },
   { term: 'Flush draw', category: 'Draws',

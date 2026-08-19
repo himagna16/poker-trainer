@@ -29,7 +29,7 @@ import {
 import { preflopPercentile } from './preflopStrength';
 import { requiredEquity } from './equity';
 import type { Action, HandState } from './engine';
-import { legalActions, toCall, maxBetTo } from './engine';
+import { legalActions, toCall } from './engine';
 
 export interface BotPersona {
   id: string;

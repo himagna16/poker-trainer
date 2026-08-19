@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { CardRow } from '@/components/CardView';
 import { TrainingPanel, PRESETS } from '@/components/TrainingPanel';
 import type { XraySettings } from '@/components/TrainingPanel';
@@ -90,66 +90,74 @@ const VERDICT_STYLE: Record<string, { badge: string; ring: string; label: string
 };
 
 export default function PlayPage() {
+  // One random source that survives re-renders. Held in state with a lazy
+  // initializer rather than a ref: a ref's argument is re-evaluated on every
+  // render even though only the first result is kept, and reading a ref while
+  // rendering is exactly the kind of thing that makes components stop updating
+  // when you expect them to. Seeding it with a fixed number means the first
+  // hand is identical on the server and in the browser, so hydration matches.
+  const [rng] = useState(() => makeRng(20260818));
   const [personaId, setPersonaId] = useState('tag');
   const [spectatorId, setSpectatorId] = useState<string | null>(null);
   const [settings, setSettings] = useState<XraySettings>(PRESETS.full.settings);
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<Session>(() => startHand(0, 'tag', rng));
   const [stats, setStats] = useState<Stats>(BLANK_STATS);
   const [raiseAmount, setRaiseAmount] = useState<number | null>(null);
-  const rngRef = useRef(makeRng(20260818));
 
   const persona = getPersona(personaId);
   const spectating = spectatorId !== null;
 
   const deal = useCallback(
-    (button: number) => {
-      setSession(startHand(button, personaId, rngRef.current));
+    (button: number, who: string = personaId) => {
+      setSession(startHand(button, who, rng));
       setRaiseAmount(null);
     },
-    [personaId]
+    [personaId, rng]
   );
 
-  useEffect(() => {
-    deal(0);
-    // Changing opponent restarts the run, since results against different
-    // players aren't comparable.
-    setStats(BLANK_STATS);
-  }, [deal]);
+  /** Switching opponents starts a fresh run - results against different players aren't comparable. */
+  const changeOpponent = useCallback(
+    (id: string) => {
+      setPersonaId(id);
+      setStats(BLANK_STATS);
+      deal(0, id);
+    },
+    [deal]
+  );
 
-  const state = session?.state ?? null;
-  const isHeroTurn = !!state && !state.complete && state.toAct === HERO && !spectating;
-  const showVillainCards = settings.showOpponentCards || !!state?.complete || spectating;
+  const state = session.state;
+  const isHeroTurn = !state.complete && state.toAct === HERO && !spectating;
+  const showVillainCards = settings.showOpponentCards || state.complete || spectating;
 
-  const need = state ? toCall(state, HERO) : 0;
-  const potOdds = state && need > 0 ? requiredEquity(need, state.pot) : null;
+  const need = toCall(state, HERO);
+  const potOdds = need > 0 ? requiredEquity(need, state.pot) : null;
 
   // --- Live readouts. Each is gated on its toggle so we never pay for a
   // calculation the player has chosen not to look at.
   const equity = useMemo(() => {
-    if (!state || state.complete || !settings.showEquity) return null;
-    return equityForDisplay(state, HERO, session!.range, settings.showOpponentCards);
+    if (state.complete || !settings.showEquity) return null;
+    return equityForDisplay(state, HERO, session.range, settings.showOpponentCards);
   }, [state, settings.showEquity, settings.showOpponentCards, session]);
 
   const outs = useMemo(() => {
-    if (!state || state.complete || !settings.showOuts || !settings.showOpponentCards) return null;
+    if (state.complete || !settings.showOuts || !settings.showOpponentCards) return null;
     if (state.board.length < 3 || state.board.length >= 5) return null;
     return findOuts(state.hole[HERO], state.hole[1], state.board).length;
   }, [state, settings.showOuts, settings.showOpponentCards]);
 
   const previewGrade = useMemo(() => {
-    if (!isHeroTurn || !settings.showEV || !session) return null;
-    return gradeDecision(state!, HERO, persona, session.range, null, { trials: 500 });
+    if (!isHeroTurn || !settings.showEV) return null;
+    return gradeDecision(state, HERO, persona, session.range, null, { trials: 500 });
   }, [isHeroTurn, settings.showEV, session, state, persona]);
 
   const act = useCallback(
     (action: Action) => {
-      if (!session || !state) return;
       // Grade first - once we apply the action the situation is gone.
       const graded = gradeDecision(state, HERO, persona, session.range, action, { trials: 700 });
 
       let next = applyAction(state, action);
       let range = session.range;
-      const advanced = advanceOpponent(next, range, persona, rngRef.current, HERO);
+      const advanced = advanceOpponent(next, range, persona, rng, HERO);
       next = advanced.state;
       range = advanced.range;
 
@@ -169,26 +177,22 @@ export default function PlayPage() {
       setSession({ ...session, state: next, range, feedback: graded });
       setRaiseAmount(null);
     },
-    [session, state, persona]
+    [session, state, persona, rng]
   );
 
   /** One bot action, for watching two strategies play each other. */
   const step = useCallback(() => {
-    if (!session || !state || state.complete) return;
+    if (state.complete) return;
     const who = state.toAct === HERO ? getPersona(spectatorId ?? 'tag') : persona;
     const before = state;
-    const action = botAction(state, who, rngRef.current);
+    const action = botAction(state, who, rng);
     let range = session.range;
     if (state.toAct !== HERO) range = updateRangeWithAction(range, before, persona, action);
     const next = applyAction(state, action);
     range = removeBlocked(range, [...next.hole[HERO], ...next.board]);
     if (next.complete) setStats((s) => ({ ...s, hands: s.hands + 1 }));
     setSession({ ...session, state: next, range });
-  }, [session, state, persona, spectatorId]);
-
-  if (!session || !state) {
-    return <div className="grid min-h-96 place-items-center text-slate-500">Shuffling…</div>;
-  }
+  }, [session, state, persona, spectatorId, rng]);
 
   const legal = legalActions(state);
   const raiseOpt = legal.find((a) => a.type === 'bet' || a.type === 'raise');
@@ -243,7 +247,7 @@ export default function PlayPage() {
           <label className="text-xs text-slate-400">Opponent</label>
           <select
             value={personaId}
-            onChange={(e) => setPersonaId(e.target.value)}
+            onChange={(e) => changeOpponent(e.target.value)}
             className="rounded-md border border-white/10 bg-slate-800 px-2 py-1.5 text-sm text-slate-200"
           >
             {PERSONAS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}

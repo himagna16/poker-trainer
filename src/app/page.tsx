@@ -1,69 +1,91 @@
-import Image from "next/image";
+import Link from 'next/link';
 
-export default function Home() {
+const FEATURES = [
+  {
+    title: 'See straight through your opponent',
+    body:
+      'Turn on full X-ray and you can see their cards, your live odds, what each action is worth, and ' +
+      'every hand they could be holding. Then switch the training wheels off one at a time until you are ' +
+      'playing blind - by which point you have built the intuition the numbers were teaching.',
+  },
+  {
+    title: 'Every decision graded, with a reason',
+    body:
+      'After each move you find out exactly what it cost or gained, in big blinds, and why. Not "you ' +
+      'should fold here" - the actual price you were getting, how often you win, and how often they fold.',
+  },
+  {
+    title: 'Five opponents worth learning to read',
+    body:
+      'A rock who folds everything, a station who calls everything, a maniac, and two competent regulars. ' +
+      'The same hand is a shove against one and a fold against another. Learning to spot which is which is ' +
+      'worth more at a real table than any chart.',
+  },
+  {
+    title: 'The words everyone assumes you know',
+    body:
+      'Ninety-four terms, defined for someone who genuinely does not know them yet, and wired into the game ' +
+      'so the definition appears the moment you flop the boat rather than sitting on a page you never visit.',
+  },
+];
+
+export default function HomePage() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="mx-auto max-w-5xl px-4 py-14">
+      <section className="text-center">
+        <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+          Learn poker without paying tuition to strangers
+        </h1>
+        <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-slate-400">
+          Most people learn this game by losing money at it. Play against bots you can see through,
+          get every decision scored, and find out what the table is actually talking about.
+        </p>
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <Link
+            href="/play"
+            className="rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-emerald-950 transition hover:bg-emerald-400"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            Sit down at the table
+          </Link>
+          <Link
+            href="/drills"
+            className="rounded-lg border border-white/15 bg-white/5 px-6 py-3 font-semibold text-slate-200 transition hover:bg-white/10"
           >
-            Documentation
-          </a>
+            Run some drills
+          </Link>
         </div>
-      </main>
+      </section>
+
+      <section className="mt-16 grid gap-4 sm:grid-cols-2">
+        {FEATURES.map((f) => (
+          <div key={f.title} className="rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+            <h2 className="font-semibold text-emerald-300">{f.title}</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-400">{f.body}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="mt-14 rounded-2xl border border-white/10 bg-white/[0.02] p-6">
+        <h2 className="font-semibold text-slate-100">How it knows what the right play is</h2>
+        <p className="mt-2 text-sm leading-relaxed text-slate-400">
+          Serious poker tools grade you against a &ldquo;solver&rdquo; - a computed near-perfect strategy.
+          Solvers are expensive, and they grade you against an opponent you will never meet.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-slate-400">
+          This does something simpler and, for learning, more useful. Because the bots&apos; strategies are
+          written down, the best possible response to them can be worked out by brute force: take the
+          spot you are in, try every action, replay the rest of the hand a few thousand times, and see
+          which one actually makes the most money. No theory involved - just counting. The answer is
+          exactly right for the opponent sitting in front of you.
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-slate-400">
+          Everything runs in your browser. No account, no server, no limit on how many hands you play.
+        </p>
+      </section>
+
+      <p className="mt-10 text-center text-xs text-slate-600">
+        Play money only. Nothing here can be wagered, deposited, or cashed out.
+      </p>
     </div>
   );
 }
