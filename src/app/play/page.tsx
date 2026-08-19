@@ -21,7 +21,7 @@ import type { DecisionGrade, Lineup, Verdict } from '@/lib/poker/grade';
 import { findOuts, requiredEquity } from '@/lib/poker/equity';
 import { captureSpot, describeSnapshot } from '@/lib/poker/spots';
 import {
-  useStore, useNow, recordDecision, recordHand, saveSpot, summarize, formatWhen,
+  useStore, useNow, recordDecision, recordHand, saveSpot, summarize, formatWhen, dismissIntro,
 } from '@/lib/poker/storage';
 
 const HERO = 0;
@@ -62,6 +62,50 @@ const VERDICT: Record<Verdict, { label: string; tone: 'good' | 'neutral' | 'warn
   mistake: { label: 'Mistake', tone: 'warn', bar: 'var(--color-warn)' },
   blunder: { label: 'Blunder', tone: 'bad', bar: 'var(--color-bad)' },
 };
+
+/**
+ * State the decision in a sentence.
+ *
+ * The table shows everything a player needs and names none of it. Someone who
+ * has never played reads "Pot 7", "BTN", "Call 4" and has to reverse-engineer
+ * what they are being asked. One plain sentence - who bet, what it costs, how
+ * many people are left - removes almost all of that, and because it is prose it
+ * carries glossary tooltips on every term inside it.
+ */
+function describeSituation(state: HandState, heroSeat: number): string {
+  const seat = positionName(state, heroSeat);
+  const need = toCall(state, heroSeat);
+  const live = livePlayers(state).length;
+  const others = live - 1;
+  const company =
+    others === 1 ? 'One opponent is still in.' : `${others} opponents are still in.`;
+
+  if (state.street === 0 && state.betToMatch <= state.bigBlind) {
+    return need > 0
+      ? `You're the ${seat}. Nobody has raised, so it costs ${need} to call the big blind and see a flop. ${company}`
+      : `You're the ${seat}. Nobody raised, so you can check and see a flop for free. ${company}`;
+  }
+
+  // Find whoever last put money in on this street, so we can name them.
+  let aggressor = '';
+  let raisedTo = 0;
+  for (let i = state.log.length - 1; i >= 0; i--) {
+    const entry = state.log[i];
+    if (entry.street !== state.street) break;
+    if (entry.kind === 'action' && entry.seat !== undefined && / bets | raises to /.test(` ${entry.text} `)) {
+      aggressor = positionName(state, entry.seat);
+      raisedTo = state.committed[entry.seat];
+      break;
+    }
+  }
+
+  if (need > 0) {
+    const who = aggressor ? `The ${aggressor}` : 'Someone';
+    const verb = state.street === 0 ? 'raised to' : 'bet';
+    return `You're the ${seat}. ${who} ${verb} ${raisedTo || need}, so it costs you ${need} to stay in. ${company}`;
+  }
+  return `You're the ${seat}. Nobody has bet, so checking is free. ${company}`;
+}
 
 /**
  * Let the bots act until it's the hero's turn again.
@@ -401,6 +445,40 @@ export default function PlayPage() {
         </div>
       </div>
 
+      {!store.introSeen && (
+        <div className="rise mb-4">
+          <Panel>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 max-w-2xl">
+                <h2 className="display text-[24px]">New to this? Three things.</h2>
+                <ol className="mt-2.5 space-y-1.5 text-[14px] leading-relaxed text-[var(--color-ink-muted)]">
+                  <li>
+                    <b className="text-[var(--color-ink)]">You&apos;re at the bottom of the table.</b> Everyone
+                    else is a bot, and each one plays a different way — the Nit folds almost everything, the
+                    Station calls almost everything. Working out who you&apos;re against is most of the game.
+                  </li>
+                  <li>
+                    <b className="text-[var(--color-ink)]">Nothing here costs anything.</b> Play the hands you
+                    would never risk money on. That&apos;s what this is for.
+                  </li>
+                  <li>
+                    <b className="text-[var(--color-ink)]">Every move is scored afterwards</b>, with the reason
+                    why. If a word is underlined, hover it for a plain-English definition.
+                  </li>
+                </ol>
+                <p className="mt-2.5 text-[13px] text-[var(--color-ink-faint)]">
+                  The panel on the right is showing you everything at once on purpose. Switch pieces off as they
+                  start to feel obvious.
+                </p>
+              </div>
+              <Button tone="primary" onClick={dismissIntro}>
+                Got it
+              </Button>
+            </div>
+          </Panel>
+        </div>
+      )}
+
       <div className="flex flex-col gap-4 lg:flex-row">
         <div className="min-w-0 flex-1">
           <PokerTable
@@ -447,6 +525,9 @@ export default function PlayPage() {
               </div>
             ) : isHeroTurn ? (
               <Panel>
+                <p className="mb-3 border-b border-[var(--color-line)] pb-3 text-[14px] leading-relaxed text-[var(--color-ink-muted)]">
+                  <Annotated text={describeSituation(state, HERO)} />
+                </p>
                 <div className="flex flex-wrap items-center gap-2">
                   {legal.find((a) => a.type === 'fold') && (
                     <Button tone="quiet" size="lg" onClick={() => act({ type: 'fold' })}>

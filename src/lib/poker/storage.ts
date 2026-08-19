@@ -67,6 +67,8 @@ export interface Store {
   version: 1;
   lifetime: LifetimeStats;
   spots: SavedSpot[];
+  /** Has the short orientation note been dismissed? */
+  introSeen: boolean;
 }
 
 const EMPTY_LIFETIME: LifetimeStats = {
@@ -75,8 +77,19 @@ const EMPTY_LIFETIME: LifetimeStats = {
   vpipHands: 0, pfrHands: 0, firstPlayedAt: 0, lastPlayedAt: 0,
 };
 
-/** The value used while server-rendering, where there is no localStorage. */
-const EMPTY_STORE: Store = { version: 1, lifetime: EMPTY_LIFETIME, spots: [] };
+/**
+ * The value used while server-rendering, where there is no localStorage.
+ *
+ * introSeen is true here on purpose. During hydration React renders with this
+ * snapshot before switching to the real one, so a returning visitor would
+ * otherwise see the orientation note flash up and vanish. Better to withhold it
+ * for a frame and then show it than to show it and snatch it away.
+ */
+const SERVER_STORE: Store = { version: 1, lifetime: EMPTY_LIFETIME, spots: [], introSeen: true };
+
+function freshStore(): Store {
+  return { version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [], introSeen: false };
+}
 
 /* ------------------------------------------------------------------ *
  * Spaced repetition
@@ -141,20 +154,21 @@ function hasStorage(): boolean {
 }
 
 function load(): Store {
-  if (!hasStorage()) return EMPTY_STORE;
+  if (!hasStorage()) return SERVER_STORE;
   try {
     const raw = window.localStorage.getItem(KEY);
-    if (!raw) return { version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [] };
+    if (!raw) return freshStore();
     const parsed = JSON.parse(raw) as Store;
-    if (parsed?.version !== 1) return { version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [] };
+    if (parsed?.version !== 1) return freshStore();
     return {
       version: 1,
       lifetime: { ...EMPTY_LIFETIME, ...parsed.lifetime },
       spots: Array.isArray(parsed.spots) ? parsed.spots : [],
+      introSeen: parsed.introSeen === true,
     };
   } catch {
     // Corrupt or unreadable data shouldn't take the app down with it.
-    return { version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [] };
+    return freshStore();
   }
 }
 
@@ -177,7 +191,7 @@ function getSnapshot(): Store {
 }
 
 function getServerSnapshot(): Store {
-  return EMPTY_STORE;
+  return SERVER_STORE;
 }
 
 function subscribe(callback: () => void): () => void {
@@ -319,8 +333,13 @@ export function forgetSpot(id: string): void {
   persist({ ...store, spots: store.spots.filter((s) => s.id !== id) });
 }
 
+export function dismissIntro(): void {
+  persist({ ...getSnapshot(), introSeen: true });
+}
+
 export function resetEverything(): void {
-  persist({ version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [] });
+  // Clearing your history shouldn't replay the introduction at you.
+  persist({ ...freshStore(), introSeen: true });
 }
 
 /* ------------------------------------------------------------------ *

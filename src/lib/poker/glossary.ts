@@ -68,22 +68,30 @@ export const GLOSSARY: GlossaryEntry[] = [
     short: 'One round of betting. Preflop, flop, turn and river are the four streets.' },
 
   // ---------- Position ----------
-  { term: 'Button', aliases: ['the button', 'dealer button'], category: 'Position',
+  { term: 'Button', aliases: ['the button', 'dealer button', 'btn'], category: 'Position',
     short: 'The seat that acts last after the flop. The best seat at the table.',
     why: 'Acting last means you see what everyone does before you decide. It is worth real money - the button is the most profitable seat in poker by a wide margin.' },
-  { term: 'Small blind', category: 'Position',
+  { term: 'Small blind', aliases: ['sb'], category: 'Position',
     short: 'A forced bet posted before cards are dealt, half the size of the big blind.' },
   { term: 'Big blind', aliases: ['bb'], category: 'Position',
-    short: 'The larger forced bet, and the unit everything else is measured in.',
-    why: 'Stacks and results are always quoted in big blinds so they mean the same thing at any stake.' },
+    short: 'The larger of the two forced bets — and the unit everything else is measured in.',
+    why: 'Winning "6 bb" means six times the big blind. Results are quoted this way so they mean the ' +
+      'same thing whether you play for pennies or for thousands.' },
   { term: 'In position', aliases: ['ip'], category: 'Position',
     short: 'Acting after your opponent on every remaining street.' },
   { term: 'Out of position', aliases: ['oop'], category: 'Position',
     short: 'Having to act before your opponent. Harder, and worth less money.' },
   { term: 'Under the gun', aliases: ['utg'], category: 'Position',
     short: 'First to act before the flop. The worst seat, so play tighter here.' },
-  { term: 'Cutoff', category: 'Position',
+  { term: 'Cutoff', aliases: ['co'], category: 'Position',
     short: 'The seat directly to the right of the button. Second-best position.' },
+  { term: 'Hijack', aliases: ['hj'], category: 'Position',
+    short: 'Two seats to the right of the button. Third-best position.',
+    why: 'Late enough to open fairly wide, but two players still act behind you.' },
+  { term: 'Lojack', aliases: ['lj'], category: 'Position',
+    short: 'Three seats to the right of the button.' },
+  { term: 'Middle position', aliases: ['mp'], category: 'Position',
+    short: 'The seats between the early ones and the cutoff.' },
 
   // ---------- Actions ----------
   { term: 'Check', category: 'Actions',
@@ -300,4 +308,9 @@ export function lookup(term: string): GlossaryEntry | undefined {
  * "open-ended straight draw" before "straight", or we'd wrongly tag the inner
  * word and mangle the phrase.
  */
-export const GLOSSARY_KEYS: string[] = [...GLOSSARY_INDEX.keys()].sort((a, b) => b.length - a.length);
+export const GLOSSARY_KEYS: string[] = [...GLOSSARY_INDEX.keys()]
+  // Very short keys are kept out of the prose scanner. Looking up "co" or "lj"
+  // on purpose is useful; matching them inside a sentence is a false positive
+  // waiting to happen.
+  .filter((key) => key.length >= 3)
+  .sort((a, b) => b.length - a.length);
