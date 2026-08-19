@@ -29,13 +29,26 @@ const DESCRIPTION =
 /**
  * Where the site lives, for building absolute URLs to the preview image.
  *
- * Vercel sets VERCEL_URL on every deployment, including previews, so this
- * resolves correctly without anything being hardcoded. NEXT_PUBLIC_SITE_URL
- * overrides it once there's a custom domain.
+ * The order here matters more than it looks. VERCEL_URL is tempting but wrong:
+ * it's the URL of one specific DEPLOYMENT, it changes on every push, and on
+ * most accounts those URLs sit behind Vercel's deployment protection. A social
+ * scraper fetching the preview image from one gets a redirect to a login page,
+ * so the card silently fails to render everywhere the link is shared.
+ *
+ * VERCEL_PROJECT_PRODUCTION_URL is the stable, public production domain, which
+ * is what an absolute metadata URL actually needs. VERCEL_URL is kept only as a
+ * fallback, where it is genuinely correct: preview deployments, which have no
+ * production domain of their own.
+ *
+ * Set NEXT_PUBLIC_SITE_URL once there's a custom domain and it wins over both.
  */
 const siteUrl =
   process.env.NEXT_PUBLIC_SITE_URL ??
-  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3007');
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3007');
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
