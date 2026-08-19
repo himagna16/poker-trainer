@@ -1,26 +1,44 @@
 @import "tailwindcss";
 
+@theme {
+  --color-felt-900: #06281f;
+  --color-felt-800: #0a3a2b;
+  --color-felt-700: #0f4d3a;
+  --color-felt-600: #14614a;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --background: #080c14;
+  --foreground: #e8edf5;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
+
+/* The felt. A radial gradient reads as a lit table rather than a flat green box. */
+.felt {
+  background:
+    radial-gradient(ellipse 80% 70% at 50% 42%, var(--color-felt-600) 0%, var(--color-felt-700) 45%, var(--color-felt-900) 100%);
+}
+
+/* Dotted underline under any word that has a glossary definition. */
+.term-underline {
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(-8px) rotateX(30deg); }
+  to   { opacity: 1; transform: none; }
+}
+.card-in { animation: card-in 260ms ease-out backwards; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.fade-up { animation: fade-up 200ms ease-out backwards; }

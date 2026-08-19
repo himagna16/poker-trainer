@@ -40,11 +40,12 @@
 import type { Card } from './cards';
 import { deckWithout, shuffle, makeRng } from './cards';
 import { evaluate } from './evaluator';
-import { requiredEquity } from './equity';
+import { requiredEquity, fastEquity } from './equity';
+import type { EquityResult } from './equity';
 import type { HandState, Action } from './engine';
 import { cloneState, applyAction, legalActions, netResult, toCall } from './engine';
 import type { BotPersona } from './bots';
-import { botAction, getPersona } from './bots';
+import { botAction, botPolicy, getPersona } from './bots';
 import type { WeightedRange } from './ranges';
 import { makeSampler, rangePercent } from './ranges';
 
@@ -77,6 +78,8 @@ export interface DecisionGrade {
   heroEquityVsRange: number;
   heroEquityVsHand: number;
   potOdds: number | null;
+  /** How often the opponent folds to the action taken, if it was a bet or raise. */
+  foldFrequency: number | null;
   villainRangePercent: number;
   trials: number;
 }
@@ -225,6 +228,79 @@ function equityVsActual(state: HandState, heroSeat: number, trials: number, rng:
 }
 
 /**
+ * Hero's equity right now, packaged for display.
+ *
+ * Which question we answer depends on whether the training wheels are on. With
+ * their cards visible we can compute the exact answer against that exact hand.
+ * With them hidden, the honest question is "against everything they could have",
+ * which we sample - so it comes back with an error bar attached.
+ */
+export function equityForDisplay(
+  state: HandState,
+  heroSeat: number,
+  range: WeightedRange,
+  againstActualHand: boolean,
+  seed = 31337
+): EquityResult {
+  if (againstActualHand) {
+    return fastEquity(state.hole[heroSeat], state.hole[1 - heroSeat], state.board);
+  }
+  const rng = makeRng(seed);
+  const trials = 4000;
+  const value = equityVsRange(state, heroSeat, range, trials, rng);
+  const variance = Math.max(0, value * (1 - value));
+  return {
+    equity: value,
+    win: value,
+    tie: 0,
+    lose: 1 - value,
+    trials,
+    exact: false,
+    margin: 1.96 * Math.sqrt(variance / trials),
+  };
+}
+
+/**
+ * How often does the opponent fold to this bet?
+ *
+ * This is "fold equity", and it's the missing half of why betting works. A bet
+ * wins two different ways: they fold immediately, or they call and you win at
+ * showdown. Equity alone only measures the second one, which is why a hand with
+ * poor equity can still be a profitable bet.
+ *
+ * We compute it exactly: play the bet out, then ask the opponent's own strategy
+ * how often it folds each holding still in its range, weighted by likelihood.
+ */
+export function foldFrequency(
+  state: HandState,
+  heroSeat: number,
+  persona: BotPersona,
+  range: WeightedRange,
+  action: Action
+): number | null {
+  if (action.type === 'fold' || action.type === 'check') return null;
+  let after: HandState;
+  try {
+    after = applyAction(state, action);
+  } catch {
+    return null;
+  }
+  if (after.complete || after.toAct === heroSeat) return null;
+
+  let weighted = 0;
+  let total = 0;
+  for (const combo of range) {
+    let pFold = 0;
+    for (const option of botPolicy(after, persona, combo.cards)) {
+      if (option.action.type === 'fold') pFold += option.prob;
+    }
+    weighted += combo.weight * pFold;
+    total += combo.weight;
+  }
+  return total > 0 ? weighted / total : null;
+}
+
+/**
  * Grade the decision facing the hero right now.
  *
  * `chosenAction` is optional: pass it to score a move you already made, or omit
@@ -312,10 +388,14 @@ export function gradeDecision(
   const need = toCall(state, heroSeat);
   const potOdds = need > 0 ? requiredEquity(need, state.pot) : null;
 
+  const actionForFolds = chosen?.action ?? bestVsRange.action;
+  const folds = foldFrequency(state, heroSeat, villainPersona, villainRange, actionForFolds);
+
   const verdict = verdictFor(evLostVsRange);
   const { headline, detail } = explain({
     state, heroSeat, chosen, bestVsRange, evLostVsRange, evLostVsHand,
     heroEquityVsRange, heroEquityVsHand, potOdds, verdict, villainPersona,
+    foldFrequency: folds, trials, toCall: need,
   });
 
   return {
@@ -331,6 +411,7 @@ export function gradeDecision(
     heroEquityVsRange,
     heroEquityVsHand,
     potOdds,
+    foldFrequency: folds,
     villainRangePercent: rangePercent(villainRange),
     trials,
   };
@@ -355,54 +436,75 @@ interface ExplainArgs {
   potOdds: number | null;
   verdict: Verdict;
   villainPersona: BotPersona;
+  foldFrequency: number | null;
+  trials: number;
+  toCall: number;
 }
 
-/** Turn the numbers into a sentence a beginner can act on. */
+/**
+ * Turn the numbers into a sentence you can act on.
+ *
+ * The explanation has to match the decision that was actually made. Telling
+ * someone about pot odds after they raised is confusing noise - a raise is
+ * about fold equity, a call is about price, and a check is about pot control.
+ */
 function explain(a: ExplainArgs): { headline: string; detail: string } {
   const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
-  const bb = (x: number) => `${x >= 0 ? '' : '-'}${Math.abs(x).toFixed(2)} bb`;
-
-  if (!a.chosen) {
-    return {
-      headline: `Best play: ${a.bestVsRange.label}`,
-      detail:
-        `Against ${a.villainPersona.name}'s range you win ${pct(a.heroEquityVsRange)} of the time.` +
-        (a.potOdds !== null ? ` You're being asked to call, which needs ${pct(a.potOdds)} to break even.` : ''),
-    };
-  }
-
+  const bb = (x: number) => `${Math.abs(x).toFixed(2)} bb`;
+  const type = a.chosen?.action.type ?? a.bestVsRange.action.type;
   const parts: string[] = [];
 
-  if (a.potOdds !== null) {
-    const need = a.potOdds;
-    const have = a.heroEquityVsRange;
-    parts.push(
-      `You need to win ${pct(need)} of the time to make calling break even, and against their range you win ${pct(have)}. ` +
-      (have >= need
-        ? `That's enough, so folding would be giving up something profitable.`
-        : `That's short, so calling loses money over time even when it happens to work.`)
-    );
+  if (type === 'call' || type === 'fold') {
+    if (a.potOdds !== null) {
+      parts.push(
+        `Calling costs ${a.toCall} to win a pot of ${a.state.pot}, so you need to be right ` +
+        `${pct(a.potOdds)} of the time. Against ${a.villainPersona.name}'s range you win ` +
+        `${pct(a.heroEquityVsRange)}. ` +
+        (a.heroEquityVsRange >= a.potOdds
+          ? `That clears the price, so folding gives up something profitable.`
+          : `That falls short of the price, so calling loses money over time even on the occasions it works.`)
+      );
+    } else {
+      parts.push(`Against their range your hand is best ${pct(a.heroEquityVsRange)} of the time.`);
+    }
+  } else if (type === 'bet' || type === 'raise') {
+    if (a.foldFrequency !== null) {
+      parts.push(
+        `${a.villainPersona.name} folds ${pct(a.foldFrequency)} of the time to this. ` +
+        `When they do call, you still win ${pct(a.heroEquityVsRange)}. ` +
+        `That is why betting can beat checking even with a weak hand - it wins two different ways, ` +
+        `either they give up now or you are still good at showdown.`
+      );
+    } else {
+      parts.push(`You win ${pct(a.heroEquityVsRange)} against the hands they can have here.`);
+    }
   } else {
-    parts.push(`Against ${a.villainPersona.name}'s range your hand is good ${pct(a.heroEquityVsRange)} of the time.`);
-  }
-
-  // The teaching moment: what was right against their range versus what happened
-  // to be right against the exact hand they held.
-  const disagree =
-    a.evLostVsRange <= 0.08 && a.evLostVsHand > 0.5;
-  if (disagree) {
     parts.push(
-      `Worth noticing: against the specific hand they turned out to have, this was the wrong move ` +
-      `by ${bb(a.evLostVsHand)}. But you couldn't see their cards, and against everything they ` +
-      `could have had, your play was right. Judge decisions by the range, not by the result.`
+      `Checking keeps the pot small and gives you a free look at the next card. ` +
+      `Against their range your hand is good ${pct(a.heroEquityVsRange)} of the time.`
     );
   }
 
-  parts.push(`(Measured by replaying this spot ${'thousands of'} times against this opponent's actual strategy.)`);
+  // The most important lesson in the app: the difference between a good decision
+  // and a good outcome.
+  if (a.evLostVsRange <= 0.08 && a.evLostVsHand > 0.5) {
+    parts.push(
+      `Worth noticing: against the exact hand they turned out to have, this was the wrong move by ` +
+      `${bb(a.evLostVsHand)}. But you could not see their cards, and against everything they could ` +
+      `have had, it was right. Judge the decision, not the result.`
+    );
+  } else if (a.evLostVsRange > 0.5 && a.evLostVsHand <= 0.08) {
+    parts.push(
+      `This one happened to work out against the hand they had, which makes it easy to miss - ` +
+      `against their range as a whole it still cost you ${bb(a.evLostVsRange)}.`
+    );
+  }
+
+  parts.push(`(Worked out by replaying this exact spot ${a.trials.toLocaleString()} times against their real strategy.)`);
 
   const headline =
-    a.verdict === 'best' ? `Best play - ${a.chosen.label}`
-    : a.verdict === 'fine' ? `Close - ${a.chosen.label} costs ${bb(a.evLostVsRange)}`
+    a.verdict === 'best' ? `Best play - ${a.chosen?.label ?? a.bestVsRange.label}`
+    : a.verdict === 'fine' ? `Close - ${a.chosen!.label} costs ${bb(a.evLostVsRange)}`
     : a.verdict === 'mistake' ? `Mistake - ${a.bestVsRange.label} was better by ${bb(a.evLostVsRange)}`
     : `Blunder - ${a.bestVsRange.label} was better by ${bb(a.evLostVsRange)}`;
 
