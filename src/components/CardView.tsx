@@ -11,11 +11,29 @@ import { rankOf, suitOf, RANK_CHARS, SUIT_SYMBOLS, SUIT_IS_RED } from '@/lib/pok
  * readable when they overlap. Larger sizes also carry a centre pip.
  */
 const SIZES = {
-  xs: { w: 'w-[26px]', h: 'h-[36px]', r: 'rounded-[4px]', rank: 'text-[11px]', suit: 'text-[9px]', pip: '' },
-  sm: { w: 'w-[34px]', h: 'h-[48px]', r: 'rounded-[5px]', rank: 'text-[13px]', suit: 'text-[11px]', pip: '' },
-  md: { w: 'w-[46px]', h: 'h-[64px]', r: 'rounded-[7px]', rank: 'text-[17px]', suit: 'text-[13px]', pip: 'text-[20px]' },
-  lg: { w: 'w-[60px]', h: 'h-[84px]', r: 'rounded-[9px]', rank: 'text-[22px]', suit: 'text-[16px]', pip: 'text-[28px]' },
-  xl: { w: 'w-[76px]', h: 'h-[106px]', r: 'rounded-[11px]', rank: 'text-[28px]', suit: 'text-[20px]', pip: 'text-[36px]' },
+  xs: {
+    box: 'w-[20px] h-[28px] sm:w-[26px] sm:h-[36px] rounded-[3px] sm:rounded-[4px]',
+    rank: 'text-[9px] sm:text-[11px]', suit: 'text-[7px] sm:text-[9px]', pip: '',
+  },
+  sm: {
+    box: 'w-[26px] h-[36px] sm:w-[34px] sm:h-[48px] rounded-[4px] sm:rounded-[5px]',
+    rank: 'text-[10px] sm:text-[13px]', suit: 'text-[8px] sm:text-[11px]', pip: '',
+  },
+  md: {
+    box: 'w-[34px] h-[48px] sm:w-[46px] sm:h-[64px] rounded-[5px] sm:rounded-[7px]',
+    rank: 'text-[13px] sm:text-[17px]', suit: 'text-[10px] sm:text-[13px]',
+    pip: 'text-[14px] sm:text-[20px]',
+  },
+  lg: {
+    box: 'w-[42px] h-[59px] sm:w-[60px] sm:h-[84px] rounded-[6px] sm:rounded-[9px]',
+    rank: 'text-[16px] sm:text-[22px]', suit: 'text-[12px] sm:text-[16px]',
+    pip: 'text-[19px] sm:text-[28px]',
+  },
+  xl: {
+    box: 'w-[56px] h-[78px] sm:w-[76px] sm:h-[106px] rounded-[8px] sm:rounded-[11px]',
+    rank: 'text-[21px] sm:text-[28px]', suit: 'text-[15px] sm:text-[20px]',
+    pip: 'text-[26px] sm:text-[36px]',
+  },
 } as const;
 
 export type CardSize = keyof typeof SIZES;
@@ -31,7 +49,7 @@ export function CardView({
   delay?: number;
 }) {
   const s = SIZES[size];
-  const base = `${s.w} ${s.h} ${s.r} deal-in shrink-0 select-none`;
+  const base = `${s.box} deal-in shrink-0 select-none`;
 
   if (hidden || card === undefined) {
     return (
@@ -97,7 +115,7 @@ export function CardRow({
       {Array.from({ length: empties }).map((_, i) => (
         <div
           key={`empty-${i}`}
-          className={`${s.w} ${s.h} ${s.r} shrink-0 border border-white/[0.13] bg-black/[0.13]`}
+          className={`${s.box} shrink-0 border border-white/[0.13] bg-black/[0.13]`}
         />
       ))}
     </div>

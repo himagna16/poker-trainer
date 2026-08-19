@@ -58,7 +58,15 @@ export function Button({
   );
 }
 
-/** A labelled number. The value uses the serif, which makes figures feel considered. */
+/**
+ * A labelled number.
+ *
+ * Large values use the display serif, which makes figures feel considered. Small
+ * ones deliberately do NOT: Instrument Serif is a high-contrast face, and below
+ * about 24px the thin horizontal strokes of a zero drop out entirely, so "0"
+ * renders as something closer to "()". In an app this full of numbers that is
+ * not a trade worth making, so small stats fall back to the sans.
+ */
 export function Stat({
   label, value, sub, tone = 'default', size = 'md',
 }: {
@@ -74,11 +82,15 @@ export function Stat({
     bad: 'text-[var(--color-bad)]',
     warn: 'text-[var(--color-warn)]',
   };
-  const sizes = { sm: 'text-xl', md: 'text-[28px]', lg: 'text-[38px]' };
+  const sizes = {
+    sm: 'text-[19px] font-medium tracking-tight',
+    md: 'display text-[28px]',
+    lg: 'display text-[38px]',
+  };
   return (
     <div>
       <div className="eyebrow">{label}</div>
-      <div className={`display tnum mt-0.5 ${sizes[size]} ${colours[tone]}`}>{value}</div>
+      <div className={`tnum mt-0.5 ${sizes[size]} ${colours[tone]}`}>{value}</div>
       {sub && <div className="mt-0.5 text-[11px] leading-snug text-[var(--color-ink-faint)]">{sub}</div>}
     </div>
   );

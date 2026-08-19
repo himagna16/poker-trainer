@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import { CardRow } from './CardView';
 import type { HandState } from '@/lib/poker/engine';
 import {
@@ -26,15 +27,22 @@ export interface SeatView {
  * ellipse from there. Expressing it as an angle means the same code lays out a
  * heads-up match and a nine-handed table without any special cases.
  */
-function seatPosition(seat: number, heroSeat: number, count: number): { x: number; y: number } {
+function seatAngle(seat: number, heroSeat: number, count: number): { cos: number; sin: number } {
   const offset = (seat - heroSeat + count) % count;
   const angle = (90 + (offset * 360) / count) * (Math.PI / 180);
-  // Wider than tall, and deliberately short of the edges: each pod is about
-  // 120px wide and 80px tall, so pushing the ellipse any further out clips them
-  // against the rail.
+  return { cos: Math.cos(angle), sin: Math.sin(angle) };
+}
+
+/**
+ * Seat positions come out of one ellipse, sized by CSS variables rather than
+ * baked into the numbers here. That lets the ring pull in on a phone - where
+ * the table is barely 340px wide and seats would otherwise crowd the board -
+ * without needing a resize listener or a second layout.
+ */
+function seatStyle(cos: number, sin: number): React.CSSProperties {
   return {
-    x: 50 + 40 * Math.cos(angle),
-    y: 50 + 33 * Math.sin(angle),
+    left: `calc(50% + ${cos.toFixed(4)} * var(--seat-rx))`,
+    top: `calc(50% + ${sin.toFixed(4)} * var(--seat-ry))`,
   };
 }
 
@@ -57,11 +65,15 @@ export function PokerTable({
 
   // A nine-handed table needs more vertical room than a heads-up one.
   const heightClass =
-    state.playerCount <= 3 ? 'min-h-[420px]' : state.playerCount <= 6 ? 'min-h-[520px]' : 'min-h-[580px]';
+    state.playerCount <= 3
+      ? 'min-h-[320px] sm:min-h-[420px]'
+      : state.playerCount <= 6
+        ? 'min-h-[400px] sm:min-h-[520px]'
+        : 'min-h-[460px] sm:min-h-[580px]';
 
   return (
     <div
-      className={`felt lift-lg relative ${heightClass} overflow-hidden rounded-[2.5rem] border border-[var(--color-felt-rail)]`}
+      className={`felt seat-ring lift-lg relative ${heightClass} overflow-hidden rounded-[2rem] border border-[var(--color-felt-rail)] sm:rounded-[2.5rem]`}
     >
       {/* Inner rail, so the felt reads as a table rather than a green rectangle. */}
       <div className="pointer-events-none absolute inset-3 rounded-[2rem] border border-white/[0.07]" />
@@ -100,13 +112,13 @@ export function PokerTable({
       {/* ---- Seats ---- */}
       {seats.map((view) => {
         const { seat, isHero } = view;
-        const pos = seatPosition(seat, heroSeat, state.playerCount);
+        const { cos, sin } = seatAngle(seat, heroSeat, state.playerCount);
         const folded = state.folded[seat];
         const acting = state.toAct === seat && !state.complete;
         const isButton = seat === state.button;
         const committed = state.committed[seat];
         const reveal = view.showCards || (showdown && !folded);
-        const inTopHalf = pos.y < 50;
+        const inTopHalf = sin < 0;
 
         const made =
           reveal && state.board.length >= 3 && !folded
@@ -127,27 +139,27 @@ export function PokerTable({
           <div
             key="plaque"
             title={view.name}
-            className={`rounded-xl border px-2.5 py-1.5 text-center backdrop-blur-sm transition ${
+            className={`rounded-lg border px-1.5 py-1 text-center backdrop-blur-sm transition sm:rounded-xl sm:px-2.5 sm:py-1.5 ${
               acting
                 ? 'acting border-transparent bg-[var(--color-lav)] text-[var(--color-lav-ink)]'
                 : 'border-white/10 bg-black/35 text-white'
             }`}
           >
             <div className="flex items-center justify-center gap-1.5">
-              <span className="max-w-[104px] truncate text-[12px] font-medium leading-tight">
+              <span className="max-w-[64px] truncate text-[10px] font-medium leading-tight sm:max-w-[104px] sm:text-[12px]">
                 {view.label}
               </span>
               {isButton && (
                 <span
                   title="Dealer button"
-                  className="grid h-[15px] w-[15px] shrink-0 place-items-center rounded-full bg-white text-[9px] font-bold text-[var(--color-ink)]"
+                  className="grid h-[13px] w-[13px] shrink-0 place-items-center rounded-full bg-white text-[8px] font-bold text-[var(--color-ink)] sm:h-[15px] sm:w-[15px] sm:text-[9px]"
                 >
                   D
                 </span>
               )}
             </div>
             <div
-              className={`tnum text-[11px] leading-tight ${
+              className={`tnum text-[9px] leading-tight sm:text-[11px] ${
                 acting ? 'text-[var(--color-lav-ink)]/65' : 'text-white/50'
               }`}
             >
@@ -161,14 +173,14 @@ export function PokerTable({
           <div
             key={seat}
             className="absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+            style={seatStyle(cos, sin)}
           >
             {/* Cards always sit on the side facing the middle of the table, the
                 way they would in front of a real player. */}
             <div className={`flex flex-col items-center gap-1.5 transition ${folded ? 'opacity-40 grayscale' : ''}`}>
               {inTopHalf ? [plaque, cards] : [cards, plaque]}
               {made && (
-                <div className="max-w-[132px] truncate rounded-full bg-black/35 px-2 py-0.5 text-[10px] text-white/65">
+                <div className="hidden max-w-[132px] truncate rounded-full bg-black/35 px-2 py-0.5 text-[10px] text-white/65 sm:block">
                   {made}
                 </div>
               )}

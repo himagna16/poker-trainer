@@ -338,12 +338,27 @@ export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]):
       return [{ action: { type: 'fold' }, prob: 1 }];
     }
 
-    if (pct <= persona.threeBetPct * crowd && canRaise) {
+    // THE PRICE. A 3bb raise is cheap and worth calling wide; a 100bb shove is
+    // not. Without this, even a calling station would call off its whole stack
+    // with 85% of hands, and the trainer would happily recommend shoving a
+    // hundred big blinds with ace-ten - correct against a bot that broken, and
+    // ruinous advice at a real table.
+    //
+    // The exponent is gentle rather than a cliff, so loose players stay loose:
+    // facing 10bb a station still calls about 40% of hands, facing 100bb about
+    // 13%, while a tight regular drops to roughly 4% - which is about right.
+    const costInBB = need / state.bigBlind;
+    const priceFactor = Math.min(1, Math.pow(3 / Math.max(1, costInBB), 0.55));
+
+    if (pct <= persona.threeBetPct * crowd * priceFactor && canRaise) {
       return [{ action: sized(persona.betSizing), prob: 1 }];
     }
-    // A cheap call is worth stretching for; an expensive one isn't.
+    // Getting in cheap is worth stretching for - a limp or a min-raise costs
+    // almost nothing to see a flop.
     const priceBonus = need <= state.bigBlind ? 0.15 : 0;
-    if (pct <= persona.callPct * crowd + priceBonus) return [{ action: { type: 'call' }, prob: 1 }];
+    if (pct <= persona.callPct * crowd * priceFactor + priceBonus) {
+      return [{ action: { type: 'call' }, prob: 1 }];
+    }
     return [{ action: { type: 'fold' }, prob: 1 }];
   }
 

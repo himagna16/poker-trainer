@@ -30,10 +30,10 @@ export function Nav() {
           <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--color-felt)] text-[13px] leading-none text-white">
             ♠
           </span>
-          <span className="display text-[17px] tracking-tight">Pocket Odds</span>
+          <span className="display whitespace-nowrap text-[17px] tracking-tight">Pocket Odds</span>
         </Link>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
           {LINKS.map((link) => {
             const active = pathname === link.href || pathname.startsWith(link.href + '/');
             return (
@@ -41,7 +41,7 @@ export function Nav() {
                 key={link.href}
                 href={link.href}
                 aria-current={active ? 'page' : undefined}
-                className={`rounded-full px-4 py-1.5 text-sm transition ${
+                className={`rounded-full px-3 py-1.5 text-[13px] transition sm:px-4 sm:text-sm ${
                   active
                     ? 'bg-[var(--color-ink)] text-[var(--color-paper)]'
                     : 'text-[var(--color-ink-muted)] hover:bg-[var(--color-paper-deep)] hover:text-[var(--color-ink)]'

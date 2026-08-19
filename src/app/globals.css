@@ -110,6 +110,19 @@ body {
       var(--color-felt-deep) 82%,
       var(--color-felt-rail) 100%);
 }
+/* The ellipse the seats sit on. Pulled in on small screens so pods don't
+   crowd the board; opened out once there's room. */
+.seat-ring {
+  --seat-rx: 35%;
+  --seat-ry: 35%;
+}
+@media (min-width: 640px) {
+  .seat-ring {
+    --seat-rx: 40%;
+    --seat-ry: 33%;
+  }
+}
+
 /* A faint inner shadow at the rail so the felt reads as recessed. */
 .felt::after {
   content: '';

@@ -303,8 +303,8 @@ export default function PlayPage() {
   return (
     <div className="mx-auto max-w-6xl px-4 pb-16 pt-4">
       {/* ---- Session bar ---- */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Panel className="flex-1" pad={false}>
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
+        <Panel className="min-w-0 lg:flex-1" pad={false}>
           <div className="flex flex-wrap items-center gap-x-7 gap-y-2 px-4 py-2.5">
             <span className="text-[13px] text-[var(--color-ink-faint)]">
               Hand <b className="tnum text-[var(--color-ink)]">{session.handNo}</b>
@@ -343,11 +343,11 @@ export default function PlayPage() {
           </div>
         </Panel>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Segmented
             size="sm"
             options={[
-              { value: 2, label: 'Heads-up' },
+              { value: 2, label: 'HU' },
               { value: 3, label: '3' },
               { value: 6, label: '6-max' },
               { value: 9, label: '9' },

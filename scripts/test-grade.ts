@@ -11,7 +11,7 @@
  */
 import { buildSpot, uniformLineup, uniformBook } from '../src/lib/poker/testing';
 import { gradeDecision, foldsOutProbability } from '../src/lib/poker/grade';
-import { getPersona } from '../src/lib/poker/bots';
+import { getPersona, botPolicy } from '../src/lib/poker/bots';
 import { legalActions } from '../src/lib/poker/engine';
 
 let failed = 0;
@@ -156,7 +156,60 @@ console.log('\n5. A monster wants money in; junk facing a big bet does not.\n');
 }
 
 /* ---------------------------------------------------------------- */
-console.log('\n6. Speed - grading has to keep up with clicking.\n');
+console.log('\n6. Price sensitivity before the flop.\n');
+console.log('   How wide each type continues has to depend on what the raise COSTS.');
+console.log('   A bot that called 85% of hands whether facing 3bb or 100bb would make');
+console.log('   the trainer recommend shoving a hundred big blinds with ace-ten, which');
+console.log('   is correct against a bot that broken and ruinous at a real table.\n');
+{
+  const RANKS = '23456789TJQKA';
+  const widths: Record<string, number[]> = { station: [], tag: [], rock: [] };
+  console.log('   raise to     Station   Regular      Rock');
+  for (const raiseTo of [4, 20, 200]) {
+    const row: string[] = [];
+    for (const id of ['station', 'tag', 'rock']) {
+      const s = buildSpot({
+        playerCount: 2, heroSeat: 0, button: 0, street: 0,
+        holes: {}, invested: [1, raiseTo], committed: [1, raiseTo], toAct: 0,
+      });
+      let cont = 0;
+      let total = 0;
+      for (let i = 0; i < 13; i++) for (let j = 0; j < 13; j++) {
+        const weight = i === j ? 6 : i > j ? 4 : 12;
+        const cards = i === j ? [i * 4, i * 4 + 1] : i > j ? [i * 4, j * 4] : [i * 4, j * 4 + 1];
+        total += weight;
+        if (!botPolicy(s, getPersona(id), cards).some((o) => o.action.type === 'fold')) cont += weight;
+      }
+      widths[id].push(cont / total);
+      row.push(`${((cont / total) * 100).toFixed(0)}%`.padStart(9));
+    }
+    console.log(`   ${String(raiseTo).padStart(4)} (${String(Math.round(raiseTo / 2)).padStart(3)}bb) ${row.join('  ')}`);
+  }
+  console.log();
+  for (const id of ['station', 'tag', 'rock']) {
+    check(`${getPersona(id).name} tightens up as the raise grows`,
+      widths[id].every((w, i) => i === 0 || w < widths[id][i - 1]),
+      widths[id].map((w) => `${(w * 100).toFixed(0)}%`).join(' -> '));
+  }
+  check('a calling station still calls far wider than a rock',
+    widths.station[0] > widths.rock[0] * 4);
+}
+{
+  const s = buildSpot({
+    playerCount: 2, heroSeat: 0, button: 0, street: 0,
+    holes: { 0: 'AcTd' }, invested: [1, 2], committed: [1, 2], toAct: 0,
+  });
+  const g = gradeDecision(s, 0, uniformLineup(2, 0, 'station'), uniformBook(s, 0, 0.85), null, { trials: 900 })!;
+  const shove = g.options.find((o) => o.action.type === 'raise' && o.action.amount === 200);
+  console.log(`   ace-ten heads-up vs a station -> recommends ${g.bestVsRange.label}` +
+    (shove ? `, shoving 100bb is ${bb(shove.evVsRange)}` : ''));
+  check('does not recommend shoving 100bb with ace-ten',
+    g.bestVsRange.action.type !== 'raise' || (g.bestVsRange.action.amount ?? 0) < 100);
+  if (shove) check('shoving 100bb with ace-ten is not profitable', shove.evVsRange < 0, bb(shove.evVsRange));
+}
+
+/* ---------------------------------------------------------------- */
+console.log('\n7. Speed - grading has to keep up with clicking.\n');
 {
   for (const n of [2, 6, 9]) {
     const s = buildSpot({
