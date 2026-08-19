@@ -1,22 +1,25 @@
 /**
- * engine.ts - the rules of heads-up No-Limit Texas Hold'em.
+ * engine.ts - the rules of No-Limit Texas Hold'em, for two to nine players.
  *
  * This file knows nothing about odds, bots, or the interface. It only knows
  * what is legal, whose turn it is, and who wins. Keeping it that strict is what
- * lets us reuse it three different ways: the table you play on, the drills, and
- * the thousands of invisible simulated hands we run to grade your decisions.
+ * lets us reuse it three ways: the table you play on, the drills, and the
+ * thousands of invisible simulated hands used to grade your decisions.
  *
- * WHY HEADS-UP (one opponent) FOR VERSION ONE:
- * Two things get dramatically simpler. There's only ever one pot - with three
- * or more players and different stack sizes you need "side pots", which is the
- * single fiddliest piece of poker rules code. And the decision tree is small
- * enough that we can actually simulate it forward to grade your play, which is
- * the whole point of the app.
+ * Two parts of this are genuinely hard, and both are where real poker software
+ * tends to have bugs:
  *
- * THE HEADS-UP BLIND RULE PEOPLE ALWAYS GET WRONG:
- * With two players, the button posts the SMALL blind and acts FIRST before the
- * flop - then acts LAST on every street after it. That inversion is not a typo,
- * it's the actual rule, and it's the reason the button is such a strong seat.
+ *  1. SIDE POTS. If someone is all in for less than everyone else, they can
+ *     only win the part of the pot they actually matched. The rest becomes a
+ *     separate pot that only the remaining players can win. Get this wrong and
+ *     chips appear or vanish. See buildPots().
+ *
+ *  2. THE HEADS-UP INVERSION. With exactly two players the button posts the
+ *     SMALL blind and acts FIRST before the flop, then LAST on every street
+ *     after it. This is a real rule, not a special case we invented, and it is
+ *     the most commonly miscoded thing in poker engines. Rather than branching
+ *     on player count everywhere, we chose formulas below that produce the
+ *     right answer for two players on their own.
  */
 
 import type { Card } from './cards';
@@ -52,29 +55,80 @@ export interface LogEntry {
   text: string;
 }
 
+/**
+ * Seat labels by distance from the button.
+ *
+ * Index 0 is the button itself, so the seat holding label `i` is
+ * `(button + i) % playerCount`. Short tables simply drop the early seats,
+ * which is exactly what happens at a real table as players leave.
+ */
+const POSITION_LABELS: Record<number, string[]> = {
+  2: ['BTN', 'BB'],
+  3: ['BTN', 'SB', 'BB'],
+  4: ['BTN', 'SB', 'BB', 'CO'],
+  5: ['BTN', 'SB', 'BB', 'UTG', 'CO'],
+  6: ['BTN', 'SB', 'BB', 'UTG', 'HJ', 'CO'],
+  7: ['BTN', 'SB', 'BB', 'UTG', 'MP', 'HJ', 'CO'],
+  8: ['BTN', 'SB', 'BB', 'UTG', 'UTG+1', 'MP', 'HJ', 'CO'],
+  9: ['BTN', 'SB', 'BB', 'UTG', 'UTG+1', 'MP', 'LJ', 'HJ', 'CO'],
+};
+
+export const POSITION_FULL_NAMES: Record<string, string> = {
+  BTN: 'Button',
+  SB: 'Small blind',
+  BB: 'Big blind',
+  UTG: 'Under the gun',
+  'UTG+1': 'Under the gun + 1',
+  MP: 'Middle position',
+  LJ: 'Lojack',
+  HJ: 'Hijack',
+  CO: 'Cutoff',
+};
+
+export interface Pot {
+  amount: number;
+  /** Seats still in the hand that are allowed to win this pot. */
+  eligible: number[];
+  /** False for the main pot, true for anything created by a short all-in. */
+  isSide: boolean;
+}
+
+export interface PotAward {
+  pot: Pot;
+  winners: number[];
+  perWinner: number;
+}
+
 export interface HandResult {
-  /** 0 or 1, or -1 for a split pot. */
-  winner: number;
-  potWon: number;
-  /** Net chip change for each seat over the whole hand. */
-  net: [number, number];
+  /** Every pot and who took it. Usually one entry; more when someone was all in for less. */
+  awards: PotAward[];
+  /** Net chip change per seat across the whole hand. Always sums to zero. */
+  net: number[];
   showdown: boolean;
-  handDescriptions?: [string, string];
+  /** Hand descriptions for seats that reached showdown; empty string otherwise. */
+  handDescriptions: string[];
 }
 
 export interface HandState {
+  playerCount: number;
   stack: number[];
-  /** Stacks as they were before the blinds went in, so we can report net win/loss. */
+  /** Stacks before the blinds went in, so we can report net win/loss. */
   startStack: number[];
   hole: Card[][];
   /** Chips put in on the CURRENT street. Reset each street. */
   committed: number[];
-  /** Chips put in across the whole hand. */
+  /** Chips put in across the whole hand. This is what side pots are built from. */
   invested: number[];
   folded: boolean[];
   allIn: boolean[];
   /** Has this seat acted since the last bet or raise? */
   acted: boolean[];
+  /**
+   * Set when a player faces an all-in raise too small to count as a full raise.
+   * They may call or fold but not re-raise - a real rule that stops a tiny
+   * all-in from reopening a betting round that was effectively closed.
+   */
+  frozen: boolean[];
 
   button: number;
   street: Street;
@@ -84,9 +138,10 @@ export interface HandState {
   toAct: number;
   /** The highest amount committed by anyone this street. */
   betToMatch: number;
-  /** Size of the last raise, used to enforce the minimum re-raise. */
+  /** Size of the last full raise, used to enforce the minimum re-raise. */
   lastRaiseSize: number;
   bigBlind: number;
+  smallBlind: number;
 
   deck: Card[];
   deckPos: number;
@@ -97,60 +152,138 @@ export interface HandState {
 }
 
 export interface HandConfig {
-  stacks?: [number, number];
+  playerCount?: number;
+  stacks?: number[];
+  /** Used for every seat when `stacks` is omitted. */
+  startingStack?: number;
   button?: number;
   bigBlind?: number;
   seed?: number;
 }
 
-export function seatName(state: HandState, seat: number): string {
-  return seat === state.button ? 'Button' : 'Big blind';
+/* ------------------------------------------------------------------ *
+ * Positions
+ * ------------------------------------------------------------------ */
+
+/** How many seats clockwise this seat sits from the button. */
+export function seatsFromButton(state: HandState, seat: number): number {
+  return (seat - state.button + state.playerCount) % state.playerCount;
 }
 
-/** Chips this seat must put in to match the current bet. */
-export function toCall(state: HandState, seat: number): number {
-  return Math.max(0, Math.min(state.betToMatch - state.committed[seat], state.stack[seat]));
+/** Short label: BTN, CO, UTG and so on. */
+export function positionLabel(state: HandState, seat: number): string {
+  const labels = POSITION_LABELS[state.playerCount] ?? POSITION_LABELS[9];
+  return labels[seatsFromButton(state, seat)] ?? `Seat ${seat + 1}`;
+}
+
+export function positionName(state: HandState, seat: number): string {
+  return POSITION_FULL_NAMES[positionLabel(state, seat)] ?? positionLabel(state, seat);
+}
+
+export function smallBlindSeat(state: HandState): number {
+  // With two players the button IS the small blind. With three or more it's the
+  // seat to the button's left.
+  return state.playerCount === 2 ? state.button : (state.button + 1) % state.playerCount;
+}
+
+export function bigBlindSeat(state: HandState): number {
+  return state.playerCount === 2
+    ? (state.button + 1) % 2
+    : (state.button + 2) % state.playerCount;
 }
 
 /**
- * The most this seat can meaningfully wager.
+ * How good this seat's position is, from 0 (worst) to 1 (best).
  *
- * You can never win more than your opponent is able to lose, so a bet is capped
- * at what they could still call. Capping here means we never have to hand chips
- * back mid-hand, which is what keeps us free of side-pot bookkeeping.
+ * Two different things both count as "position", and they don't agree:
+ *
+ *   BEFORE THE FLOP, what matters is how many players still have to act behind
+ *   you. The small blind is nearly last to speak, so on that measure it looks
+ *   great.
+ *
+ *   AFTER THE FLOP, the order flips: the small blind acts FIRST on every
+ *   remaining street and the button acts LAST. That's three streets of acting
+ *   blind versus three streets of acting with full information.
+ *
+ * The button is the best seat in poker precisely because it wins on the measure
+ * that matters more. So we blend the two, weighted toward the preflop count for
+ * the immediate decision but with enough postflop weight that the button ends
+ * up opening widest - which is what every real chart does.
  */
-export function maxBetTo(state: HandState, seat: number): number {
-  const opp = 1 - seat;
-  const mine = state.committed[seat] + state.stack[seat];
-  const theirs = state.committed[opp] + state.stack[opp];
-  return Math.min(mine, theirs);
+export function positionQuality(state: HandState, seat: number): number {
+  const n = state.playerCount;
+  if (n <= 2) return seat === state.button ? 0.75 : 0.35;
+
+  // Preflop: how few players speak after you.
+  const behind = (bigBlindSeat(state) - seat + n) % n;
+  const preflop = 1 - behind / (n - 1);
+
+  // Postflop: distance from the button, where the button acts last and the
+  // small blind acts first.
+  const fromButton = seatsFromButton(state, seat);
+  const postflop = fromButton === 0 ? 1 : (fromButton - 1) / (n - 1);
+
+  return 0.65 * preflop + 0.35 * postflop;
 }
 
+/** @deprecated kept as an alias while callers migrate. */
+export const preflopLateness = positionQuality;
+
+export function livePlayers(state: HandState): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < state.playerCount; i++) if (!state.folded[i]) out.push(i);
+  return out;
+}
+
+/** Seats that still have chips and a decision left to make. */
+export function actablePlayers(state: HandState): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < state.playerCount; i++) {
+    if (!state.folded[i] && !state.allIn[i]) out.push(i);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Dealing
+ * ------------------------------------------------------------------ */
+
 export function newHand(config: HandConfig = {}): HandState {
+  // Infer the table size from explicit stacks when they're given, so a caller
+  // can't accidentally hand us six seats' worth of state and two stacks.
+  const playerCount = Math.max(2, Math.min(9, config.playerCount ?? config.stacks?.length ?? 6));
   const bigBlind = config.bigBlind ?? 2;
-  const smallBlind = Math.floor(bigBlind / 2);
-  const stacks = config.stacks ?? [200, 200];
-  const button = config.button ?? 0;
+  const smallBlind = Math.max(1, Math.floor(bigBlind / 2));
+  const startingStack = config.startingStack ?? 200;
+  const stacks = config.stacks ?? new Array(playerCount).fill(startingStack);
+  if (stacks.length !== playerCount) {
+    throw new Error(`newHand: ${stacks.length} stacks given for ${playerCount} players`);
+  }
+  const button = (config.button ?? 0) % playerCount;
   const seed = config.seed ?? Math.floor(Math.random() * 2 ** 31);
 
   const deck = shuffle(makeDeck(), makeRng(seed));
+
   const state: HandState = {
+    playerCount,
     stack: [...stacks],
     startStack: [...stacks],
-    hole: [[], []],
-    committed: [0, 0],
-    invested: [0, 0],
-    folded: [false, false],
-    allIn: [false, false],
-    acted: [false, false],
+    hole: [],
+    committed: new Array(playerCount).fill(0),
+    invested: new Array(playerCount).fill(0),
+    folded: new Array(playerCount).fill(false),
+    allIn: new Array(playerCount).fill(false),
+    acted: new Array(playerCount).fill(false),
+    frozen: new Array(playerCount).fill(false),
     button,
     street: 0,
     board: [],
     pot: 0,
-    toAct: button, // heads-up: the button acts first before the flop
+    toAct: 0,
     betToMatch: 0,
     lastRaiseSize: bigBlind,
     bigBlind,
+    smallBlind,
     deck,
     deckPos: 0,
     complete: false,
@@ -158,34 +291,84 @@ export function newHand(config: HandConfig = {}): HandState {
     log: [],
   };
 
-  state.hole[0] = [deck[state.deckPos++], deck[state.deckPos++]];
-  state.hole[1] = [deck[state.deckPos++], deck[state.deckPos++]];
+  // Seat i takes deck[2i] and deck[2i+1]; the board starts right after. Fixing
+  // the layout like this lets the grader rebuild a deck from a known position
+  // when it replays the hand.
+  for (let i = 0; i < playerCount; i++) {
+    state.hole.push([deck[state.deckPos++], deck[state.deckPos++]]);
+  }
 
-  const bb = 1 - button;
-  post(state, button, smallBlind, 'small blind');
-  post(state, bb, bigBlind, 'big blind');
+  post(state, smallBlindSeat(state), smallBlind, 'small blind');
+  post(state, bigBlindSeat(state), bigBlind, 'big blind');
   state.betToMatch = bigBlind;
 
-  // Posting a blind isn't a decision, so neither player counts as having acted.
-  // This is what gives the big blind the "option" to raise when the button
-  // just calls - a rule that surprises people learning the game.
-  state.acted = [false, false];
+  // Posting a blind is forced, not a decision, so nobody counts as having acted.
+  // That's what gives the big blind the option to raise when everyone limps.
+  state.acted.fill(false);
+
+  // Preflop, action starts to the big blind's left. With two players that
+  // formula lands back on the button, which is exactly right.
+  const first = nextActor(state, bigBlindSeat(state));
+  state.toAct = first < 0 ? bigBlindSeat(state) : first;
   return state;
 }
 
-function post(state: HandState, seat: number, amount: number, label: string): void {
-  const put = Math.min(amount, state.stack[seat]);
+function contribute(state: HandState, seat: number, amount: number): number {
+  const put = Math.max(0, Math.min(amount, state.stack[seat]));
   state.stack[seat] -= put;
   state.committed[seat] += put;
   state.invested[seat] += put;
   state.pot += put;
   if (state.stack[seat] === 0) state.allIn[seat] = true;
-  state.log.push({ street: 0, kind: 'blind', seat, text: `${seatName(state, seat)} posts ${label} ${put}` });
+  return put;
 }
 
-/** Everything this seat is allowed to do right now. */
+function post(state: HandState, seat: number, amount: number, label: string): void {
+  const put = contribute(state, seat, amount);
+  state.log.push({
+    street: 0,
+    kind: 'blind',
+    seat,
+    text: `${positionLabel(state, seat)} posts ${label} ${put}`,
+  });
+}
+
+/** Next seat clockwise that still has a decision to make, or -1 if none. */
+function nextActor(state: HandState, from: number): number {
+  for (let i = 1; i <= state.playerCount; i++) {
+    const seat = (from + i) % state.playerCount;
+    if (!state.folded[seat] && !state.allIn[seat]) return seat;
+  }
+  return -1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Legal actions
+ * ------------------------------------------------------------------ */
+
+export function toCall(state: HandState, seat: number): number {
+  return Math.max(0, Math.min(state.betToMatch - state.committed[seat], state.stack[seat]));
+}
+
+/**
+ * The largest bet worth making.
+ *
+ * You can never win more than an opponent is able to lose, so there's no point
+ * betting beyond what the richest remaining player could call. Anything above
+ * that just gets handed straight back at showdown.
+ */
+export function maxUsefulBet(state: HandState, seat: number): number {
+  const mine = state.committed[seat] + state.stack[seat];
+  let richestOpponent = 0;
+  for (let i = 0; i < state.playerCount; i++) {
+    if (i === seat || state.folded[i]) continue;
+    richestOpponent = Math.max(richestOpponent, state.committed[i] + state.stack[i]);
+  }
+  return Math.min(mine, Math.max(richestOpponent, state.betToMatch));
+}
+
 export function legalActions(state: HandState): LegalAction[] {
-  if (state.complete) return [];
+  if (state.complete || state.toAct < 0) return [];
   const seat = state.toAct;
   const need = toCall(state, seat);
   const out: LegalAction[] = [];
@@ -202,11 +385,12 @@ export function legalActions(state: HandState): LegalAction[] {
     out.push({ type: 'check', amount: 0, label: 'Check' });
   }
 
-  // A raise has to be at least as big as the last raise. Without that rule you
-  // could raise by one chip forever and the hand would never end.
-  const max = maxBetTo(state, seat);
+  // A raise must be at least as large as the last one. Without that rule you
+  // could raise a single chip forever and the hand would never end.
+  const max = maxUsefulBet(state, seat);
   const minTo = Math.min(max, state.betToMatch + Math.max(state.lastRaiseSize, state.bigBlind));
-  const canAggress = state.stack[seat] > need && max > state.betToMatch;
+  const canAggress = !state.frozen[seat] && state.stack[seat] > need && max > state.betToMatch;
+
   if (canAggress) {
     const isRaise = state.betToMatch > 0;
     out.push({
@@ -220,204 +404,295 @@ export function legalActions(state: HandState): LegalAction[] {
   return out;
 }
 
+/* ------------------------------------------------------------------ *
+ * Applying actions
+ * ------------------------------------------------------------------ */
+
 export function cloneState(state: HandState): HandState {
   return {
     ...state,
     stack: [...state.stack],
     startStack: state.startStack,
-    hole: [[...state.hole[0]], [...state.hole[1]]],
+    hole: state.hole.map((h) => [...h]),
     committed: [...state.committed],
     invested: [...state.invested],
     folded: [...state.folded],
     allIn: [...state.allIn],
     acted: [...state.acted],
+    frozen: [...state.frozen],
     board: [...state.board],
-    deck: state.deck, // shared: never mutated except by reshuffleUnseen, which copies
-    log: state.log,   // shared until something appends; see pushLog
+    deck: state.deck,
+    log: state.log,
     result: state.result,
   };
 }
 
-/** Copy-on-write for the log so cloned states don't scribble on their parent. */
+/** Copy-on-write so cloned states don't scribble on their parent's log. */
 function pushLog(state: HandState, entry: LogEntry): void {
   state.log = [...state.log, entry];
 }
 
 /**
  * Apply an action and return the resulting state. The input is left untouched,
- * which is what makes "try every action and see what happens" - the core of our
- * grading engine - safe to do thousands of times.
+ * which is what makes "try every action and see what happens" - the heart of
+ * the grader - safe to do thousands of times.
  */
 export function applyAction(state: HandState, action: Action): HandState {
   if (state.complete) return state;
   const s = cloneState(state);
   const seat = s.toAct;
-  const opp = 1 - seat;
   const need = toCall(s, seat);
 
   switch (action.type) {
     case 'fold': {
       s.folded[seat] = true;
-      pushLog(s, { street: s.street, kind: 'action', seat, text: `${seatName(s, seat)} folds` });
-      return finishByFold(s, opp);
+      s.acted[seat] = true;
+      pushLog(s, { street: s.street, kind: 'action', seat, text: `${positionLabel(s, seat)} folds` });
+      break;
     }
     case 'check': {
       if (need > 0) throw new Error('Cannot check facing a bet');
       s.acted[seat] = true;
-      pushLog(s, { street: s.street, kind: 'action', seat, text: `${seatName(s, seat)} checks` });
+      pushLog(s, { street: s.street, kind: 'action', seat, text: `${positionLabel(s, seat)} checks` });
       break;
     }
     case 'call': {
-      const put = Math.min(need, s.stack[seat]);
-      s.stack[seat] -= put;
-      s.committed[seat] += put;
-      s.invested[seat] += put;
-      s.pot += put;
-      if (s.stack[seat] === 0) s.allIn[seat] = true;
+      const put = contribute(s, seat, need);
       s.acted[seat] = true;
       pushLog(s, {
         street: s.street, kind: 'action', seat,
-        text: `${seatName(s, seat)} calls ${put}${s.allIn[seat] ? ' and is all in' : ''}`,
+        text: `${positionLabel(s, seat)} calls ${put}${s.allIn[seat] ? ' and is all in' : ''}`,
       });
       break;
     }
     case 'bet':
     case 'raise': {
-      const target = Math.min(action.amount ?? 0, maxBetTo(s, seat));
+      const target = Math.min(action.amount ?? 0, s.committed[seat] + s.stack[seat]);
       const put = target - s.committed[seat];
       if (put <= 0 || put > s.stack[seat]) throw new Error(`Illegal raise to ${target}`);
       const raiseSize = target - s.betToMatch;
-      s.stack[seat] -= put;
-      s.committed[seat] += put;
-      s.invested[seat] += put;
-      s.pot += put;
-      if (s.stack[seat] === 0) s.allIn[seat] = true;
-      s.lastRaiseSize = Math.max(raiseSize, s.bigBlind);
+      contribute(s, seat, put);
+
+      // An all-in for less than a full raise does NOT reopen betting for anyone
+      // who has already acted - they may call or fold, but not re-raise. Players
+      // who have not spoken yet are unaffected.
+      const isFullRaise = raiseSize >= Math.max(s.lastRaiseSize, s.bigBlind);
+      if (isFullRaise) s.lastRaiseSize = raiseSize;
+
       s.betToMatch = target;
-      // A raise reopens the betting: the opponent now owes another decision.
       s.acted[seat] = true;
-      s.acted[opp] = false;
+      for (let i = 0; i < s.playerCount; i++) {
+        if (i === seat || s.folded[i] || s.allIn[i]) continue;
+        if (s.committed[i] < s.betToMatch) {
+          if (!isFullRaise && s.acted[i]) s.frozen[i] = true;
+          s.acted[i] = false;
+        }
+      }
       pushLog(s, {
         street: s.street, kind: 'action', seat,
-        text: `${seatName(s, seat)} ${action.type === 'bet' ? 'bets' : 'raises to'} ${target}${s.allIn[seat] ? ' and is all in' : ''}`,
+        text: `${positionLabel(s, seat)} ${action.type === 'bet' ? 'bets' : 'raises to'} ${target}` +
+          `${s.allIn[seat] ? ' and is all in' : ''}`,
       });
       break;
     }
   }
 
+  // Everyone else folded - the last player standing takes it without showing.
+  if (livePlayers(s).length === 1) return settle(s, false);
+
   if (bettingRoundComplete(s)) return closeStreet(s);
-  s.toAct = opp;
-  // If the opponent is already all in they have no decision left; the street is
-  // over as soon as the other player has matched them.
-  if (s.allIn[s.toAct]) return closeStreet(s);
+
+  const next = nextActor(s, seat);
+  if (next < 0) return closeStreet(s);
+  s.toAct = next;
   return s;
 }
 
 function bettingRoundComplete(s: HandState): boolean {
-  const live = [0, 1].filter((i) => !s.folded[i]);
-  if (live.length < 2) return true;
-  const canStillAct = live.filter((i) => !s.allIn[i]);
-  if (canStillAct.length === 0) return true;
-  if (canStillAct.length === 1) {
-    const i = canStillAct[0];
-    return s.acted[i] && s.committed[i] >= Math.min(s.betToMatch, s.committed[i] + s.stack[i]);
-  }
-  return live.every((i) => s.acted[i] && s.committed[i] === s.betToMatch);
+  const live = livePlayers(s);
+  if (live.length <= 1) return true;
+  const canAct = actablePlayers(s);
+  if (canAct.length === 0) return true;
+  return canAct.every((i) => s.acted[i] && s.committed[i] === s.betToMatch);
 }
 
-/** Move to the next street, or to showdown if the river is done. */
 function closeStreet(s: HandState): HandState {
-  s.committed = [0, 0];
-  s.acted = [false, false];
+  s.committed = new Array(s.playerCount).fill(0);
+  s.acted = new Array(s.playerCount).fill(false);
+  s.frozen = new Array(s.playerCount).fill(false);
   s.betToMatch = 0;
   s.lastRaiseSize = s.bigBlind;
 
-  const someoneAllIn = s.allIn[0] || s.allIn[1];
-  if (s.street === 3 || someoneAllIn) {
-    // Nobody has any decisions left, so run the rest of the board and show down.
-    while (s.board.length < 5) dealBoardCard(s);
-    return showdown(s);
+  // If at most one player can still act, nobody has decisions left. Run the rest
+  // of the board out and show down.
+  if (s.street === 3 || actablePlayers(s).length <= 1) {
+    while (s.board.length < 5) s.board = [...s.board, s.deck[s.deckPos++]];
+    return settle(s, true);
   }
 
   s.street = (s.street + 1) as Street;
-  while (s.board.length < STREET_BOARD_SIZE[s.street]) dealBoardCard(s);
+  while (s.board.length < STREET_BOARD_SIZE[s.street]) {
+    s.board = [...s.board, s.deck[s.deckPos++]];
+  }
   pushLog(s, {
     street: s.street, kind: 'deal',
     text: `${STREET_NAMES[s.street]}: ${cardsToString(s.board)}`,
   });
-  // After the flop the button acts LAST, so the other seat is first to speak.
-  s.toAct = 1 - s.button;
+
+  // After the flop, action starts to the button's left, so the button always
+  // speaks last. With two players that lands on the big blind, which is right.
+  const first = nextActor(s, s.button);
+  if (first < 0) return settle(s, true);
+  s.toAct = first;
   return s;
 }
 
-function dealBoardCard(s: HandState): void {
-  s.board = [...s.board, s.deck[s.deckPos++]];
-}
+/* ------------------------------------------------------------------ *
+ * Side pots
+ * ------------------------------------------------------------------ */
 
-function finishByFold(s: HandState, winner: number): HandState {
-  s.complete = true;
-  s.stack[winner] += s.pot;
-  s.result = {
-    winner,
-    potWon: s.pot,
-    net: netResult(s),
-    showdown: false,
-  };
-  pushLog(s, { street: s.street, kind: 'result', text: `${seatName(s, winner)} wins ${s.pot} (opponent folded)` });
-  return s;
-}
+/**
+ * Split the money into pots that the right people can win.
+ *
+ * WHY THIS IS NEEDED. Three players: you put in 200, I put in 200, and someone
+ * short shoves for 50. They can only win 50 from each of us - 150 in total. The
+ * other 300 is ours to fight over and they have no claim on it at all. So the
+ * money has to be cut into layers.
+ *
+ * THE METHOD. Look at the distinct amounts people put in - here 50 and 200 -
+ * and walk them from smallest up. Each level forms one pot containing that
+ * slice from everyone who reached it. Anyone who put in at least that much and
+ * has not folded can win it.
+ *
+ * Folded players' chips still go into the pots; they just cannot win any.
+ *
+ * This also handles uncalled bets with no extra code. If you bet 100 and
+ * everyone folds, you're the only player eligible for the top layer, so it
+ * comes straight back to you.
+ */
+export function buildPots(invested: number[], folded: boolean[]): Pot[] {
+  const levels = [...new Set(invested.filter((v) => v > 0))].sort((a, b) => a - b);
+  const pots: Pot[] = [];
+  let previous = 0;
 
-function showdown(s: HandState): HandState {
-  const score0 = evaluate([...s.hole[0], ...s.board]);
-  const score1 = evaluate([...s.hole[1], ...s.board]);
-  s.complete = true;
-
-  let winner: number;
-  if (score0 > score1) winner = 0;
-  else if (score1 > score0) winner = 1;
-  else winner = -1;
-
-  if (winner === -1) {
-    // Odd chip goes to the seat out of position, matching casino convention.
-    const half = Math.floor(s.pot / 2);
-    s.stack[0] += half;
-    s.stack[1] += s.pot - half;
-  } else {
-    s.stack[winner] += s.pot;
+  for (const level of levels) {
+    let amount = 0;
+    const eligible: number[] = [];
+    for (let i = 0; i < invested.length; i++) {
+      // This player's slice of the band between `previous` and `level`.
+      amount += Math.min(invested[i], level) - Math.min(invested[i], previous);
+      if (invested[i] >= level && !folded[i]) eligible.push(i);
+    }
+    if (amount > 0) pots.push({ amount, eligible, isSide: pots.length > 0 });
+    previous = level;
   }
 
-  s.result = {
-    winner,
-    potWon: s.pot,
-    net: netResult(s),
-    showdown: true,
-    handDescriptions: [describeHand(score0), describeHand(score1)],
-  };
-  pushLog(s, {
-    street: s.street, kind: 'result',
-    text: winner === -1
-      ? `Split pot - both have ${describeHand(score0)}`
-      : `${seatName(s, winner)} wins ${s.pot} with ${describeHand(winner === 0 ? score0 : score1)}`,
-  });
-  return s;
+  // Consecutive layers with identical eligibility are really one pot. Merging
+  // them keeps the display honest - players should see "pot 340", not three
+  // separate pots that nobody can tell apart.
+  const merged: Pot[] = [];
+  for (const pot of pots) {
+    const last = merged[merged.length - 1];
+    if (last && sameSeats(last.eligible, pot.eligible)) last.amount += pot.amount;
+    else merged.push({ ...pot, isSide: merged.length > 0 });
+  }
+  return merged;
+}
+
+function sameSeats(a: number[], b: number[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /**
- * Chips gained or lost this hand, per seat. Simply where you ended up versus
- * where you started. These two numbers always sum to zero - poker moves chips
- * around, it doesn't create them, and that makes a useful sanity check.
+ * Work out who wins what, move the chips, and close the hand.
+ *
+ * `showdown` is false when everyone folded - nobody has to reveal anything, so
+ * we skip evaluating hands entirely.
  */
-export function netResult(s: HandState): [number, number] {
-  return [s.stack[0] - s.startStack[0], s.stack[1] - s.startStack[1]];
+function settle(s: HandState, showdown: boolean): HandState {
+  const pots = buildPots(s.invested, s.folded);
+  const awards: PotAward[] = [];
+  const descriptions = new Array<string>(s.playerCount).fill('');
+
+  const scores = new Array<number>(s.playerCount).fill(-1);
+  if (showdown) {
+    for (const seat of livePlayers(s)) {
+      scores[seat] = evaluate([...s.hole[seat], ...s.board]);
+      descriptions[seat] = describeHand(scores[seat]);
+    }
+  }
+
+  for (const pot of pots) {
+    const contenders = pot.eligible.filter((i) => !s.folded[i]);
+    if (contenders.length === 0) continue;
+
+    let winners: number[];
+    if (!showdown || contenders.length === 1) {
+      winners = [contenders[0]];
+    } else {
+      const best = Math.max(...contenders.map((i) => scores[i]));
+      winners = contenders.filter((i) => scores[i] === best);
+    }
+
+    const perWinner = Math.floor(pot.amount / winners.length);
+    let remainder = pot.amount - perWinner * winners.length;
+    for (const seat of winners) s.stack[seat] += perWinner;
+
+    // Odd chips that won't divide evenly go to the first winner clockwise from
+    // the button, which is what a real dealer does.
+    const ordered = [...winners].sort(
+      (a, b) => seatsFromButton(s, a) - seatsFromButton(s, b)
+    );
+    let idx = 0;
+    while (remainder > 0) {
+      s.stack[ordered[idx % ordered.length]] += 1;
+      remainder--;
+      idx++;
+    }
+
+    awards.push({ pot, winners, perWinner });
+  }
+
+  s.complete = true;
+  s.toAct = -1;
+  s.result = {
+    awards,
+    net: s.stack.map((v, i) => v - s.startStack[i]),
+    showdown,
+    handDescriptions: descriptions,
+  };
+
+  for (const award of awards) {
+    const names = award.winners.map((w) => positionLabel(s, w)).join(' and ');
+    pushLog(s, {
+      street: s.street,
+      kind: 'result',
+      text: showdown
+        ? `${names} ${award.winners.length > 1 ? 'split' : 'wins'} ${award.pot.amount}` +
+          `${award.pot.isSide ? ' (side pot)' : ''}` +
+          (descriptions[award.winners[0]] ? ` with ${descriptions[award.winners[0]]}` : '')
+        : `${names} wins ${award.pot.amount} (everyone folded)`,
+    });
+  }
+  return s;
+}
+
+/* ------------------------------------------------------------------ *
+ * Helpers
+ * ------------------------------------------------------------------ */
+
+/** Chips gained or lost this hand, per seat. Always sums to zero. */
+export function netResult(s: HandState): number[] {
+  return s.stack.map((v, i) => v - s.startStack[i]);
 }
 
 /**
  * Re-randomize every card nobody has seen yet.
  *
  * When we grade a decision we replay the hand from this point thousands of
- * times. If the deck stayed in its original order, every replay would produce
- * the same board and we'd learn nothing. This reshuffles only the undealt
- * cards, leaving hole cards and the visible board exactly as they are.
+ * times. If the deck kept its order every replay would deal the same board and
+ * we would learn nothing. This reshuffles only the undealt cards, leaving hole
+ * cards and the visible board exactly as they are.
  */
 export function reshuffleUnseen(s: HandState, rng: () => number): void {
   const tail = s.deck.slice(s.deckPos);
@@ -425,12 +700,18 @@ export function reshuffleUnseen(s: HandState, rng: () => number): void {
   s.deck = [...s.deck.slice(0, s.deckPos), ...tail];
 }
 
-/** The smaller of the two stacks - the most that can actually change hands. */
+/** The smallest stack among players still in the hand. */
 export function effectiveStack(s: HandState): number {
-  return Math.min(s.stack[0] + s.committed[0], s.stack[1] + s.committed[1]);
+  const live = livePlayers(s);
+  if (live.length === 0) return 0;
+  return Math.min(...live.map((i) => s.stack[i] + s.committed[i]));
 }
 
-/** Pot size expressed in big blinds, which is how poker players actually talk. */
 export function inBB(chips: number, bigBlind: number): number {
   return chips / bigBlind;
+}
+
+/** Current pot layers, for display while the hand is still running. */
+export function currentPots(s: HandState): Pot[] {
+  return buildPots(s.invested, s.folded);
 }

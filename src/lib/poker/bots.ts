@@ -8,16 +8,25 @@
  * expensive to compute. That's the wrong opponent for learning. Nobody at a
  * live table plays like that.
  *
- * Instead each bot is a recognisable TYPE of bad player. Everyone who has
- * played poker has met all five of them. Learning to notice which one you're
- * up against, and adjusting, is worth far more at a real table than memorising
- * equilibrium strategy - and it's a skill the expensive solver tools barely
- * teach at all.
+ * Instead each bot is a recognisable TYPE of player. Everyone who has played
+ * poker has met all five. Learning to spot which one you're up against, and
+ * adjusting, is worth far more at a real table than memorising equilibrium
+ * strategy - and it's something the expensive solver tools barely teach at all.
  *
  * There's also a practical payoff. Because we wrote these bots, we know their
- * strategy exactly. That means we can compute the genuinely best response to
- * them by simulation, which is how the trainer grades your decisions. Against a
- * real opponent "correct play" is unknowable; against ours it's just arithmetic.
+ * strategy exactly, so the genuinely best response to them is computable by
+ * simulation. That's how the trainer grades your decisions. Against a real
+ * opponent "correct play" is unknowable; against ours it's arithmetic.
+ *
+ * TWO THINGS EVERY BOT ADJUSTS FOR:
+ *
+ *   POSITION. Acting last is worth real money, so a good player opens maybe 13%
+ *   of hands under the gun and 40% on the button. A bot that played one fixed
+ *   range from every seat would be teaching you a bad habit.
+ *
+ *   THE CROWD. The more players still in the pot, the more likely somebody has
+ *   something. A hand you'd happily call a single raise with is often a fold
+ *   once three people are already in.
  */
 
 import type { Card } from './cards';
@@ -29,7 +38,7 @@ import {
 import { preflopPercentile } from './preflopStrength';
 import { requiredEquity } from './equity';
 import type { Action, HandState } from './engine';
-import { legalActions, toCall } from './engine';
+import { legalActions, toCall, positionQuality, livePlayers } from './engine';
 
 export interface BotPersona {
   id: string;
@@ -38,13 +47,18 @@ export interface BotPersona {
   blurb: string;
   /** How to actually beat them. This is the teaching payload. */
   counter: string;
-  colour: string;
+  /** A one-word handle for the seat plaque. */
+  tag: string;
 
-  /** Fraction of starting hands they'll raise with when first in. */
+  /**
+   * Baseline share of starting hands they'd raise with. Scaled by position -
+   * this is roughly their middle-position range, widened on the button and
+   * tightened up front.
+   */
   openPct: number;
-  /** Fraction they'll call a raise with. */
+  /** Share they'll call a raise with. */
   callPct: number;
-  /** Fraction they'll re-raise with. */
+  /** Share they'll re-raise with. */
   threeBetPct: number;
 
   /** How readily they bet a decent hand after the flop, 0..1. */
@@ -64,65 +78,65 @@ export const PERSONAS: BotPersona[] = [
   {
     id: 'rock',
     name: 'The Rock',
+    tag: 'Nit',
     blurb:
       'Plays almost nothing, and when they finally play it, they have it. ' +
       'Folds constantly and almost never bluffs.',
     counter:
       'Bet at them relentlessly with anything - they fold far too often. But the ' +
       'moment a Rock raises you, believe them and get out of the way.',
-    colour: '#7c9cbf',
     openPct: 0.12, callPct: 0.10, threeBetPct: 0.03,
     aggression: 0.55, bluffFreq: 0.04, callLooseness: 0.75, betSizing: 0.6,
   },
   {
     id: 'station',
     name: 'The Calling Station',
+    tag: 'Station',
     blurb:
       'Cannot fold. Sees a flop with anything and calls you down with bottom ' +
       'pair "just to keep you honest". Rarely raises.',
     counter:
       'Never bluff them - they will call. Instead bet big with real hands, every ' +
       'street. They pay you off. This is the most profitable opponent in poker.',
-    colour: '#84a98c',
     openPct: 0.50, callPct: 0.85, threeBetPct: 0.04,
     aggression: 0.20, bluffFreq: 0.05, callLooseness: 2.2, betSizing: 0.45,
   },
   {
     id: 'maniac',
     name: 'The Maniac',
+    tag: 'Maniac',
     blurb:
       'Raises everything, all the time, with anything. Enormous swings. ' +
       'Genuinely hard to read because their range is basically every hand.',
     counter:
       'Stop bluffing and start trapping. Let them do the betting for you, then ' +
       'call down much lighter than feels comfortable - most of the time they have nothing.',
-    colour: '#d08770',
     openPct: 0.85, callPct: 0.75, threeBetPct: 0.35,
     aggression: 0.90, bluffFreq: 0.60, callLooseness: 1.25, betSizing: 0.9,
   },
   {
     id: 'tag',
     name: 'The Regular',
+    tag: 'Reg',
     blurb:
       'Tight and aggressive - the standard winning style. Plays good hands, ' +
       'bets them hard, bluffs at a believable rate. The toughest of the five.',
     counter:
       'Respect their raises but do not let them run you over. Defend your big ' +
       'blind wider than feels natural, and pick off their river bluffs occasionally.',
-    colour: '#b48ead',
     openPct: 0.22, callPct: 0.24, threeBetPct: 0.09,
     aggression: 0.75, bluffFreq: 0.30, callLooseness: 1.0, betSizing: 0.7,
   },
   {
     id: 'lag',
     name: 'The Loose Cannon',
+    tag: 'LAG',
     blurb:
       'Plays half the deck, aggressively, and applies constant pressure. ' +
-      'Skilled version of the Maniac - the bluffs are picked more carefully.',
+      'A skilled version of the Maniac - the bluffs are picked more carefully.',
     counter:
       'Widen everything. Their range is weak on average, so your medium hands go ' +
       'up in value. Let them bluff into your strong ones rather than raising them off it.',
-    colour: '#ebcb8b',
     openPct: 0.45, callPct: 0.48, threeBetPct: 0.18,
     aggression: 0.80, bluffFreq: 0.45, callLooseness: 1.15, betSizing: 0.75,
   },
@@ -133,13 +147,34 @@ export function getPersona(id: string): BotPersona {
 }
 
 /**
+ * A believable mix of opponents for a table of this size.
+ *
+ * Real tables aren't uniform. Stacking the seats with one of each type is both
+ * more realistic and better practice, because the whole skill is noticing that
+ * seat 3 folds everything while seat 5 calls everything.
+ */
+export function tableLineup(seatCount: number, heroSeat: number): string[] {
+  const rotation = ['tag', 'station', 'rock', 'lag', 'maniac', 'tag', 'station', 'rock', 'lag'];
+  const out: string[] = [];
+  let r = 0;
+  for (let i = 0; i < seatCount; i++) {
+    out.push(i === heroSeat ? 'hero' : rotation[r++ % rotation.length]);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Reading a hand
+ * ------------------------------------------------------------------ */
+
+/**
  * How good is this hand right now, on a 0..1 scale?
  *
  * This is deliberately a cheap approximation rather than a real equity
  * calculation. The reason is speed: to grade your decisions we replay the hand
  * thousands of times, and the bots have to decide inside every single replay.
  * If each bot decision ran its own simulation we'd be nesting simulations
- * inside simulations, and the interface would freeze.
+ * inside simulations and the interface would freeze.
  *
  * So we read the hand the way a person does - what did I make, how does it
  * compare to the board, am I drawing to something - and turn that into a number.
@@ -176,9 +211,9 @@ export function handStrength(hole: Card[], board: Card[]): number {
     strength = 0.05 + (kickerOf(score, 0) / 12) * 0.12;
   }
 
-  // Draws are worth real money when there are cards still to come, and worth
-  // exactly nothing on the river. Beginners systematically overvalue them on
-  // the river and undervalue them on the flop.
+  // Draws are worth real money while cards are still to come, and worth exactly
+  // nothing on the river. Beginners systematically overvalue them on the river
+  // and undervalue them on the flop.
   if (board.length < 5 && cat < CAT_STRAIGHT) {
     strength += drawBonus(hole, board, board.length === 3 ? 1 : 0.55);
   }
@@ -190,7 +225,6 @@ function drawBonus(hole: Card[], board: Card[], weight: number): number {
   const all = [...hole, ...board];
   let bonus = 0;
 
-  // Four to a flush.
   const suitCount = [0, 0, 0, 0];
   for (const c of all) suitCount[suitOf(c)]++;
   if (Math.max(...suitCount) === 4) bonus += 0.20;
@@ -212,6 +246,24 @@ function drawBonus(hole: Card[], board: Card[], weight: number): number {
   return bonus * weight;
 }
 
+/**
+ * Discount a hand's strength for the number of people you have to beat.
+ *
+ * Top pair is a good hand against one opponent and a mediocre one against four,
+ * because it now has to be better than four hands instead of one. Raising the
+ * strength to a power greater than one captures that: strong hands barely move,
+ * marginal ones fall off a cliff. This is the single biggest adjustment between
+ * heads-up and full-table play, and the one beginners most often miss.
+ */
+export function crowdAdjusted(strength: number, opponents: number): number {
+  if (opponents <= 1) return strength;
+  return Math.pow(strength, 1 + (opponents - 1) * 0.4);
+}
+
+/* ------------------------------------------------------------------ *
+ * The strategy itself
+ * ------------------------------------------------------------------ */
+
 export interface PolicyOption {
   action: Action;
   /** How often the bot takes this action in this exact spot, 0..1. */
@@ -227,7 +279,7 @@ export interface PolicyOption {
  *
  *  1. GRADING. To work out what your call is worth we replay the hand from here
  *     thousands of times. Each replay needs a fresh sample from the bot's real
- *     strategy, not a single frozen choice.
+ *     strategy, not one frozen choice.
  *
  *  2. RANGE READING. We can run this BACKWARDS. Given that the bot just bet, we
  *     ask "for each of the 1,326 hands it could hold, how likely was it to bet
@@ -237,12 +289,14 @@ export interface PolicyOption {
  */
 export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]): PolicyOption[] {
   const seat = state.toAct;
+  if (seat < 0) return [];
   const cards = hole ?? state.hole[seat];
   const legal = legalActions(state);
   if (legal.length === 0) return [];
 
   const need = toCall(state, seat);
   const canRaise = legal.find((a) => a.type === 'bet' || a.type === 'raise');
+  const opponents = Math.max(1, livePlayers(state).length - 1);
 
   const sized = (fraction: number): Action => {
     const target = Math.round(state.betToMatch + state.pot * fraction);
@@ -256,36 +310,46 @@ export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]):
   if (state.street === 0) {
     const pct = preflopPercentile(handNotation(cards[0], cards[1]));
 
-    // Heads-up, the button posts the small blind and acts FIRST before the flop.
-    // So the button is always nominally "facing a bet" - the big blind - even
-    // though nobody has raised. That is an OPENING decision, not a call-or-fold
-    // one, and it's the most common preflop spot in the game. We tell them apart
-    // by checking whether the bet has grown past the big blind.
+    // Position. This turns a 22% baseline into roughly 17% under the gun and
+    // 44% on the button - close to the ranges a solid player actually opens.
+    const openTop = Math.min(0.95, persona.openPct * (0.5 + positionQuality(state, seat) * 2.0));
+
+    // The crowd. Each extra live player shrinks what's worth continuing with.
+    const crowd = Math.pow(0.85, Math.max(0, opponents - 1));
+
+    // Heads-up, the button posts the small blind and acts FIRST before the flop,
+    // so it's always nominally "facing a bet" even though nobody has raised.
+    // That's an OPENING decision, not a call-or-fold one. We tell them apart by
+    // checking whether the bet has grown past the big blind.
     const facingRaise = state.betToMatch > state.bigBlind;
 
     if (need === 0) {
-      // Big blind with the option after a limp.
-      if (pct <= persona.openPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
+      // Big blind with the option after limps.
+      if (pct <= openTop && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
       return [{ action: { type: 'check' }, prob: 1 }];
     }
 
     if (!facingRaise) {
-      if (pct <= persona.openPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
+      if (pct <= openTop && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
       // Limping - flat-calling the big blind - is a passive player's move.
       // Aggressive types raise or fold, so only passive personas do it.
-      const limpTop = persona.aggression < 0.4 ? persona.callPct : 0;
+      const limpTop = persona.aggression < 0.4 ? persona.callPct * crowd : 0;
       if (pct <= limpTop) return [{ action: { type: 'call' }, prob: 1 }];
       return [{ action: { type: 'fold' }, prob: 1 }];
     }
 
-    if (pct <= persona.threeBetPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
+    if (pct <= persona.threeBetPct * crowd && canRaise) {
+      return [{ action: sized(persona.betSizing), prob: 1 }];
+    }
+    // A cheap call is worth stretching for; an expensive one isn't.
     const priceBonus = need <= state.bigBlind ? 0.15 : 0;
-    if (pct <= persona.callPct + priceBonus) return [{ action: { type: 'call' }, prob: 1 }];
+    if (pct <= persona.callPct * crowd + priceBonus) return [{ action: { type: 'call' }, prob: 1 }];
     return [{ action: { type: 'fold' }, prob: 1 }];
   }
 
   // ---------- After the flop ----------
-  const strength = handStrength(cards, state.board);
+  const raw = handStrength(cards, state.board);
+  const strength = crowdAdjusted(raw, opponents);
   const out: PolicyOption[] = [];
 
   if (need === 0) {
@@ -300,8 +364,16 @@ export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]):
     } else {
       pBet = persona.bluffFreq; // nothing at all, pure bluff
     }
+    // Bluffing into a crowd rarely works - somebody always has something.
+    if (opponents > 1 && strength < 0.55) pBet *= Math.pow(0.7, opponents - 1);
     if (!canRaise) pBet = 0;
-    if (pBet > 0) out.push({ action: sized(strength >= 0.55 ? persona.betSizing : persona.betSizing * 0.75), prob: pBet });
+
+    if (pBet > 0) {
+      out.push({
+        action: sized(strength >= 0.55 ? persona.betSizing : persona.betSizing * 0.75),
+        prob: pBet,
+      });
+    }
     out.push({ action: { type: 'check' }, prob: 1 - pBet });
     return out.filter((o) => o.prob > 1e-9);
   }
@@ -310,6 +382,7 @@ export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]):
   let pRaise = 0;
   if (strength >= 0.80) pRaise = persona.aggression;
   else if (strength >= 0.35 && strength < 0.55) pRaise = persona.bluffFreq * 0.4;
+  if (opponents > 1 && strength < 0.8) pRaise *= Math.pow(0.7, opponents - 1);
   if (!canRaise) pRaise = 0;
   if (pRaise > 0) out.push({ action: sized(persona.betSizing), prob: pRaise });
 
@@ -344,8 +417,9 @@ export function actionProbability(
   hole: Card[],
   taken: Action
 ): number {
-  const policy = botPolicy(state, persona, hole);
   let p = 0;
-  for (const option of policy) if (option.action.type === taken.type) p += option.prob;
+  for (const option of botPolicy(state, persona, hole)) {
+    if (option.action.type === taken.type) p += option.prob;
+  }
   return p;
 }
