@@ -509,8 +509,9 @@ export default function PlayPage() {
                   </li>
                 </ol>
                 <p className="mt-2.5 text-[13px] text-[var(--color-ink-faint)]">
-                  The panel on the right is showing you everything at once on purpose. Switch pieces off as they
-                  start to feel obvious.
+                  The panel on the right is deliberately showing only three things: their cards, your chances,
+                  and what it costs. Switch more on as those start to feel obvious — or hide their cards
+                  entirely once you want a real test.
                 </p>
               </div>
               <Button tone="primary" onClick={dismissIntro}>

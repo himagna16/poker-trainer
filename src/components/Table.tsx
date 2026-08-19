@@ -169,7 +169,7 @@ export function PokerTable({
         const plaque = (
           <div
             key="plaque"
-            className={`group relative rounded-lg border px-1.5 py-1 text-center backdrop-blur-sm transition sm:rounded-xl sm:px-2.5 sm:py-1.5 ${
+            className={`relative rounded-lg border px-1.5 py-1 text-center backdrop-blur-sm transition sm:rounded-xl sm:px-2.5 sm:py-1.5 ${
               acting
                 ? 'acting border-transparent bg-[var(--color-lav)] text-[var(--color-lav-ink)]'
                 : 'border-white/10 bg-black/35 text-white'
@@ -233,7 +233,11 @@ export function PokerTable({
         return (
           <div
             key={seat}
-            className="absolute -translate-x-1/2 -translate-y-1/2"
+            // `group` sits here rather than on the plaque so hovering lifts the
+            // WHOLE seat above its neighbours. The plaque uses backdrop-blur,
+            // which creates a stacking context and would otherwise trap the
+            // tooltip's z-index inside it, painting it under the other cards.
+            className="group absolute z-10 -translate-x-1/2 -translate-y-1/2 hover:z-50"
             style={seatStyle(cos, sin)}
           >
             {/* Cards always sit on the side facing the middle of the table, the
