@@ -21,11 +21,42 @@ const sans = Instrument_Sans({
   display: 'swap',
 });
 
+const TITLE = 'Pocket Odds — learn poker without losing money';
+const DESCRIPTION =
+  'Play against opponents you can see through. Live odds, every decision graded in big blinds, ' +
+  'and a glossary that explains what everyone at the table is talking about.';
+
+/**
+ * Where the site lives, for building absolute URLs to the preview image.
+ *
+ * Vercel sets VERCEL_URL on every deployment, including previews, so this
+ * resolves correctly without anything being hardcoded. NEXT_PUBLIC_SITE_URL
+ * overrides it once there's a custom domain.
+ */
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3007');
+
 export const metadata: Metadata = {
-  title: 'Pocket Odds — learn poker without losing money',
-  description:
-    'Play against opponents you can see through. Live odds, every decision graded in big blinds, ' +
-    'and a glossary that explains what everyone at the table is talking about.',
+  metadataBase: new URL(siteUrl),
+  title: TITLE,
+  description: DESCRIPTION,
+  applicationName: 'Pocket Odds',
+  openGraph: {
+    title: TITLE,
+    description: DESCRIPTION,
+    siteName: 'Pocket Odds',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+};
+
+export const viewport = {
+  themeColor: '#f8f6f0',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

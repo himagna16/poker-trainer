@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { SPADE_PATH } from '@/lib/mark';
 
 const LINKS = [
   { href: '/play', label: 'Play' },
@@ -27,8 +28,10 @@ export function Nav() {
           href="/"
           className="group mr-1 flex items-center gap-2 rounded-full pl-2 pr-3 py-1.5"
         >
-          <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--color-felt)] text-[13px] leading-none text-white">
-            ♠
+          <span className="grid h-7 w-7 place-items-center rounded-[9px] bg-[var(--color-felt)]">
+            <svg viewBox="0 0 64 64" className="h-[15px] w-[15px]" aria-hidden="true">
+              <path d={SPADE_PATH} fill="var(--color-paper)" />
+            </svg>
           </span>
           <span className="display whitespace-nowrap text-[17px] tracking-tight">Pocket Odds</span>
         </Link>
