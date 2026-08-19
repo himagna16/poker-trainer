@@ -29,26 +29,33 @@ const DESCRIPTION =
 /**
  * Where the site lives, for building absolute URLs to the preview image.
  *
- * The order here matters more than it looks. VERCEL_URL is tempting but wrong:
- * it's the URL of one specific DEPLOYMENT, it changes on every push, and on
- * most accounts those URLs sit behind Vercel's deployment protection. A social
- * scraper fetching the preview image from one gets a redirect to a login page,
- * so the card silently fails to render everywhere the link is shared.
+ * This is hardcoded on purpose. The obvious approach - read Vercel's env vars -
+ * looks cleaner and has a nasty failure mode: those variables are baked in at
+ * BUILD time, so renaming the domain in Vercel's settings without redeploying
+ * leaves the preview image pointing at a URL that no longer resolves. That
+ * already happened once here, and nothing on the site itself showed any sign of
+ * it - the pages were all fine, only the link previews were dead.
  *
- * VERCEL_PROJECT_PRODUCTION_URL is the stable, public production domain, which
- * is what an absolute metadata URL actually needs. VERCEL_URL is kept only as a
- * fallback, where it is genuinely correct: preview deployments, which have no
- * production domain of their own.
+ * A constant cannot rot that way. Set NEXT_PUBLIC_SITE_URL to override it if
+ * the site ever moves to a custom domain.
  *
- * Set NEXT_PUBLIC_SITE_URL once there's a custom domain and it wins over both.
+ * The override is checked for emptiness rather than just for being undefined.
+ * An environment variable that exists but is blank - trivially easy to create
+ * by accident in a hosting dashboard - would otherwise sail past a ?? check and
+ * blow up the build inside new URL('') with an error that names neither the
+ * variable nor this file.
  */
-const siteUrl =
-  process.env.NEXT_PUBLIC_SITE_URL ??
-  (process.env.VERCEL_PROJECT_PRODUCTION_URL
-    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-    : process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3007');
+const PRODUCTION_URL = 'https://pocketodds.vercel.app';
+
+const override = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+
+const siteUrl = override
+  ? override
+  : process.env.VERCEL_ENV === 'preview' && process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.NODE_ENV === 'development'
+      ? 'http://localhost:3007'
+      : PRODUCTION_URL;
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
