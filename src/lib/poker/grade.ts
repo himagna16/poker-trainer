@@ -384,7 +384,9 @@ export function foldsOutProbability(
   book: RangeBook,
   action: Action
 ): number | null {
-  if (action.type === 'fold' || action.type === 'check') return null;
+  // Fold equity is a property of putting money in. Calling or checking doesn't
+  // pressure anyone, so the question simply doesn't apply.
+  if (action.type !== 'bet' && action.type !== 'raise') return null;
 
   let s: HandState;
   try {
