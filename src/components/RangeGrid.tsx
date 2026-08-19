@@ -10,22 +10,25 @@ const RANKS = [...RANK_CHARS].reverse(); // A K Q ... 2
  * The 13x13 grid every poker tool uses to show a range.
  *
  * Pairs run down the diagonal, suited hands sit above it, offsuit below. Once
- * you can read this at a glance you can absorb "what does this player have"
- * in about a second, which is the entire reason the layout is standard.
+ * you can read this at a glance you absorb "what does this player have" in
+ * about a second, which is why the layout is worth keeping standard even though
+ * it looks cryptic at first.
  */
-export function RangeGrid({ range, title }: { range: WeightedRange; title?: string }) {
+export function RangeGrid({ range, label }: { range: WeightedRange; label?: string }) {
   const grid = rangeGrid(range);
   const pct = rangePercent(range);
 
   return (
     <div>
-      {title && (
+      {label && (
         <div className="mb-2 flex items-baseline justify-between">
-          <span className="text-xs font-medium text-slate-300">{title}</span>
-          <span className="text-xs tabular-nums text-emerald-300">{(pct * 100).toFixed(0)}% of hands</span>
+          <span className="text-[13px] font-medium">{label}</span>
+          <span className="tnum text-[13px] text-[var(--color-good)]">
+            {(pct * 100).toFixed(0)}% of hands
+          </span>
         </div>
       )}
-      <div className="grid grid-cols-13 gap-px overflow-hidden rounded bg-white/5 p-px">
+      <div className="grid grid-cols-13 gap-px overflow-hidden rounded-lg bg-[var(--color-line)] p-px">
         {RANKS.map((r1) =>
           RANKS.map((r2) => {
             const i = RANK_CHARS.indexOf(r1);
@@ -37,15 +40,18 @@ export function RangeGrid({ range, title }: { range: WeightedRange; title?: stri
             return (
               <div
                 key={`${r1}${r2}`}
-                title={`${hand} - ${present ? `${(w * 100).toFixed(0)}% likely` : 'not in range'}`}
+                title={`${hand} — ${present ? `${(w * 100).toFixed(0)}% likely` : 'not in range'}`}
                 className="relative aspect-square"
                 style={{
                   backgroundColor: present
-                    ? `rgba(16, 185, 129, ${0.12 + w * 0.75})`
-                    : 'rgba(255,255,255,0.02)',
+                    ? `color-mix(in srgb, var(--color-felt) ${8 + w * 92}%, white)`
+                    : 'var(--color-surface)',
                 }}
               >
-                <span className="absolute inset-0 grid place-items-center text-[7px] font-medium leading-none text-white/70">
+                <span
+                  className="absolute inset-0 grid place-items-center text-[7px] font-medium leading-none"
+                  style={{ color: w > 0.45 ? 'rgba(255,255,255,0.85)' : 'var(--color-ink-faint)' }}
+                >
                   {hand.slice(0, 2)}
                 </span>
               </div>
@@ -53,8 +59,8 @@ export function RangeGrid({ range, title }: { range: WeightedRange; title?: stri
           })
         )}
       </div>
-      <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
-        Brighter means more likely. Pairs on the diagonal, suited above, offsuit below.
+      <p className="mt-1.5 text-[11px] leading-snug text-[var(--color-ink-faint)]">
+        Darker means more likely. Pairs on the diagonal, suited above, offsuit below.
       </p>
     </div>
   );

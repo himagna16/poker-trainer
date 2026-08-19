@@ -1,44 +1,207 @@
 @import "tailwindcss";
 
+/**
+ * The design system.
+ *
+ * Warm ivory paper rather than white or a dark slate, deep desaturated green
+ * for the table, near-black for grounding sections, and a soft lavender as the
+ * single accent. Serif for display type and large numbers, a neutral grotesque
+ * for everything else.
+ *
+ * The rule that keeps it coherent: the page is calm and quiet, and colour is
+ * spent almost entirely on one thing - the table. Everything else earns
+ * attention through spacing and type, not through saturation.
+ */
 @theme {
-  --color-felt-900: #06281f;
-  --color-felt-800: #0a3a2b;
-  --color-felt-700: #0f4d3a;
-  --color-felt-600: #14614a;
+  /* Surfaces */
+  --color-paper:        #f8f6f0;
+  --color-paper-deep:   #f1ede2;
+  --color-surface:      #ffffff;
+  --color-line:         #e7e2d6;
+  --color-line-strong:  #d6d0c0;
+
+  /* Text */
+  --color-ink:          #1b1a17;
+  --color-ink-muted:    #565146;
+  --color-ink-faint:    #8b8578;
+
+  /* The table */
+  --color-felt:         #2d5248;
+  --color-felt-deep:    #1e3a33;
+  --color-felt-rail:    #172c27;
+  --color-felt-light:   #3a6555;
+
+  /* Accent */
+  --color-lav:          #c9bff2;
+  --color-lav-deep:     #a294de;
+  --color-lav-ink:      #2b2350;
+
+  /* Semantic, all muted - nothing neon */
+  --color-good:         #2f6f56;
+  --color-good-soft:    #e4efe8;
+  --color-warn:         #9d7327;
+  --color-warn-soft:    #f5ecd9;
+  --color-bad:          #a8503f;
+  --color-bad-soft:     #f6e5e1;
+
+  /* Cards */
+  --color-card-red:     #b5342c;
+  --color-card-black:   #1b1a17;
+
+  --font-display: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-instrument-sans), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-panel: 1.25rem;
+  --radius-slab: 2.5rem;
 }
 
 :root {
-  --background: #080c14;
-  --foreground: #e8edf5;
+  color-scheme: light;
+}
+
+html {
+  background: var(--color-paper);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* The felt. A radial gradient reads as a lit table rather than a flat green box. */
+/* Numbers should line up in columns everywhere they appear. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/**
+ * Display type. Instrument Serif has one weight, which is a feature - emphasis
+ * comes from the italic, exactly as it does on the reference site, rather than
+ * from piling on bolder weights.
+ */
+.display {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.02;
+}
+.display em {
+  font-style: italic;
+}
+
+/* Small letterspaced label sitting above a heading. */
+.eyebrow {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  font-weight: 500;
+}
+
+/* The felt. A radial gradient reads as a lit table rather than a flat shape. */
 .felt {
   background:
-    radial-gradient(ellipse 80% 70% at 50% 42%, var(--color-felt-600) 0%, var(--color-felt-700) 45%, var(--color-felt-900) 100%);
+    radial-gradient(ellipse 70% 58% at 50% 40%,
+      #43705d 0%,
+      var(--color-felt) 46%,
+      var(--color-felt-deep) 82%,
+      var(--color-felt-rail) 100%);
+}
+/* A faint inner shadow at the rail so the felt reads as recessed. */
+.felt::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 2px 24px rgba(0, 0, 0, 0.28);
 }
 
-/* Dotted underline under any word that has a glossary definition. */
+/* Soft layered shadow - one tight contact shadow, one wide ambient one. */
+.lift {
+  box-shadow:
+    0 1px 2px rgba(27, 26, 23, 0.05),
+    0 8px 24px -8px rgba(27, 26, 23, 0.10);
+}
+.lift-lg {
+  box-shadow:
+    0 1px 2px rgba(27, 26, 23, 0.06),
+    0 24px 60px -20px rgba(27, 26, 23, 0.22);
+}
+
 .term-underline {
   border-bottom: 1px dotted currentColor;
   cursor: help;
+  opacity: 0.95;
 }
 
-@keyframes card-in {
-  from { opacity: 0; transform: translateY(-8px) rotateX(30deg); }
+@keyframes deal-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.94); }
   to   { opacity: 1; transform: none; }
 }
-.card-in { animation: card-in 260ms ease-out backwards; }
+.deal-in { animation: deal-in 300ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards; }
 
-@keyframes fade-up {
-  from { opacity: 0; transform: translateY(6px); }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
-.fade-up { animation: fade-up 200ms ease-out backwards; }
+.rise { animation: rise 260ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards; }
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 191, 242, 0.55); }
+  50%      { box-shadow: 0 0 0 7px rgba(201, 191, 242, 0); }
+}
+.acting { animation: pulse-ring 1.9s ease-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .deal-in, .rise, .acting { animation: none; }
+}
+
+/* Range slider, restyled to match rather than using the browser default. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 18px;
+  width: 18px;
+  margin-top: -7px;
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 3px solid var(--color-surface);
+  box-shadow: 0 1px 4px rgba(27, 26, 23, 0.25);
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+}
+input[type="range"]::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 3px solid var(--color-surface);
+}
+
+::selection {
+  background: var(--color-lav);
+  color: var(--color-lav-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-lav-deep);
+  outline-offset: 2px;
+  border-radius: 4px;
+}

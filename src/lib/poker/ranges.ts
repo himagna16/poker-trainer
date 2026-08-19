@@ -20,6 +20,7 @@ import type { Card } from './cards';
 import { handNotation, RANK_CHARS } from './cards';
 import { preflopPercentile } from './preflopStrength';
 import type { HandState, Action } from './engine';
+import { livePlayers } from './engine';
 import type { BotPersona } from './bots';
 import { actionProbability } from './bots';
 
@@ -175,4 +176,70 @@ export function rangeGrid(range: WeightedRange): Map<string, GridCell> {
     if (cell.combos > 0) cell.weight = cell.weight / cell.combos;
   }
   return grid;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tracking every opponent at once
+ * ------------------------------------------------------------------ */
+
+/**
+ * One range per seat. The hero's own entry stays empty - we can see our cards,
+ * so there is nothing to infer.
+ *
+ * At a six-handed table you are reading five people at the same time, and they
+ * are not interchangeable: the seat that raised under the gun has a completely
+ * different range from the seat that called on the button. Keeping them
+ * separate is what lets the trainer say "the Rock has you beaten but the Maniac
+ * doesn't" instead of averaging them into mush.
+ */
+export type RangeBook = WeightedRange[];
+
+export function newRangeBook(state: HandState, heroSeat: number): RangeBook {
+  const dead = [...state.hole[heroSeat], ...state.board];
+  const book: RangeBook = [];
+  for (let seat = 0; seat < state.playerCount; seat++) {
+    book.push(seat === heroSeat ? [] : removeBlocked(fullRange(), dead));
+  }
+  return book;
+}
+
+/** Narrow one seat's range after that seat acts. Other seats are untouched. */
+export function updateBookForAction(
+  book: RangeBook,
+  stateBeforeAction: HandState,
+  persona: BotPersona,
+  action: Action,
+  seat: number
+): RangeBook {
+  const next = [...book];
+  if (next[seat] && next[seat].length > 0) {
+    next[seat] = updateRangeWithAction(next[seat], stateBeforeAction, persona, action);
+  }
+  return next;
+}
+
+/**
+ * Drop holdings containing cards that have since become visible.
+ *
+ * Every time a board card appears, that's one more card nobody can be holding.
+ * Skipping this is a quiet source of wrong reads - the app would keep assigning
+ * opponents hands built from cards lying face up on the table.
+ */
+export function pruneBook(book: RangeBook, dead: Card[]): RangeBook {
+  return book.map((range) => (range.length ? removeBlocked(range, dead) : range));
+}
+
+/** The seats we still have to worry about, and how wide each one is. */
+export function activeReads(
+  state: HandState,
+  heroSeat: number,
+  book: RangeBook
+): Array<{ seat: number; percent: number; combos: number }> {
+  return livePlayers(state)
+    .filter((seat) => seat !== heroSeat)
+    .map((seat) => ({
+      seat,
+      percent: rangePercent(book[seat] ?? []),
+      combos: Math.round(rangeWidth(book[seat] ?? [])),
+    }));
 }
