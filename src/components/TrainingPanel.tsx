@@ -6,55 +6,12 @@ import type { DecisionGrade } from '@/lib/poker/grade';
 import type { RangeBook } from '@/lib/poker/ranges';
 import type { BotPersona } from '@/lib/poker/bots';
 import type { HandState } from '@/lib/poker/engine';
+import type { XraySettings } from '@/lib/poker/settings';
+import { PRESETS, presetIdFor } from '@/lib/poker/settings';
 import { positionLabel, livePlayers } from '@/lib/poker/engine';
 import { RangeGrid } from './RangeGrid';
 import { Annotated } from './Term';
 import { Panel, PanelTitle, Stat, Toggle, Badge, Segmented } from './ui';
-
-/**
- * Which training wheels are on.
- *
- * The whole idea is that these come off ONE AT A TIME. Start with everything
- * visible - their cards, your odds, what each action is worth - and you can see
- * the machinery of the game directly. Turn things off as they start to feel
- * obvious, and by the time everything is off you're playing blind, but the
- * intuition the numbers were teaching is still there.
- */
-export interface XraySettings {
-  showOpponentCards: boolean;
-  showEquity: boolean;
-  showPotOdds: boolean;
-  showEV: boolean;
-  showRange: boolean;
-  showOuts: boolean;
-}
-
-export const PRESETS: Array<{ id: string; label: string; blurb: string; settings: XraySettings }> = [
-  {
-    id: 'full',
-    label: 'X-ray',
-    blurb: 'Everything visible. Best for your first few hundred hands.',
-    settings: { showOpponentCards: true, showEquity: true, showPotOdds: true, showEV: true, showRange: true, showOuts: true },
-  },
-  {
-    id: 'odds',
-    label: 'Odds',
-    blurb: 'Cards hidden, but you still see your odds and their ranges.',
-    settings: { showOpponentCards: false, showEquity: true, showPotOdds: true, showEV: false, showRange: true, showOuts: false },
-  },
-  {
-    id: 'price',
-    label: 'Price',
-    blurb: 'Just the pot odds. You judge your own equity.',
-    settings: { showOpponentCards: false, showEquity: false, showPotOdds: true, showEV: false, showRange: false, showOuts: false },
-  },
-  {
-    id: 'blind',
-    label: 'Blind',
-    blurb: 'No help at all. Decisions are still graded afterwards.',
-    settings: { showOpponentCards: false, showEquity: false, showPotOdds: false, showEV: false, showRange: false, showOuts: false },
-  },
-];
 
 export function TrainingPanel({
   state, heroSeat, settings, onSettings, equity, grade, potOdds, book, lineup, bigBlind, outs, cardsToCome,
@@ -73,7 +30,7 @@ export function TrainingPanel({
   cardsToCome: number;
 }) {
   const set = (patch: Partial<XraySettings>) => onSettings({ ...settings, ...patch });
-  const activePreset = PRESETS.find((p) => JSON.stringify(p.settings) === JSON.stringify(settings))?.id;
+  const activePreset = presetIdFor(settings);
 
   const opponents = livePlayers(state).filter((s) => s !== heroSeat);
   const [inspect, setInspect] = useState<number | null>(null);
@@ -88,7 +45,7 @@ export function TrainingPanel({
         <PanelTitle
           right={
             <span className="text-[11px] text-[var(--color-ink-faint)]">
-              {PRESETS.find((p) => p.id === activePreset)?.blurb ?? 'Custom'}
+              {PRESETS.find((p) => p.id === activePreset)?.blurb ?? 'Your own mix'}
             </span>
           }
         >

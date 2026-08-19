@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PokerTable } from '@/components/Table';
 import type { SeatView } from '@/components/Table';
-import { TrainingPanel, PRESETS } from '@/components/TrainingPanel';
-import type { XraySettings } from '@/components/TrainingPanel';
+import { TrainingPanel } from '@/components/TrainingPanel';
+import type { XraySettings } from '@/lib/poker/settings';
 import { Annotated } from '@/components/Term';
 import Link from 'next/link';
 import { Panel, PanelTitle, Button, Badge, Segmented } from '@/components/ui';
@@ -22,6 +22,7 @@ import { findOuts, requiredEquity } from '@/lib/poker/equity';
 import { captureSpot, describeSnapshot } from '@/lib/poker/spots';
 import {
   useStore, useNow, recordDecision, recordHand, saveSpot, summarize, formatWhen, dismissIntro,
+  saveSettings,
 } from '@/lib/poker/storage';
 
 const HERO = 0;
@@ -34,6 +35,8 @@ interface Session {
   lineup: Lineup;
   button: number;
   feedback: DecisionGrade | null;
+  /** Every decision graded this hand, so the hand can be reviewed once it ends. */
+  decisions: DecisionGrade[];
   handNo: number;
   /** Did the hero put money in before the flop by choice, and did they raise? */
   heroVoluntary: boolean;
@@ -154,19 +157,34 @@ function startHand(
   });
   const book = newRangeBook(state, HERO);
   const advanced = advanceBots(state, book, lineup, HERO, rng);
-  return { ...advanced, lineup, button: button % playerCount, feedback: null, handNo, heroVoluntary: false, heroRaised: false };
+  return { ...advanced, lineup, button: button % playerCount, feedback: null, decisions: [], handNo, heroVoluntary: false, heroRaised: false };
 }
 
 export default function PlayPage() {
   const [rng] = useState(() => makeRng(20260819));
   const [playerCount, setPlayerCount] = useState(6);
-  const [settings, setSettings] = useState<XraySettings>(PRESETS[0].settings);
   const [session, setSession] = useState<Session>(() => startHand(6, 0, 1, makeRng(20260819)));
   const [stats, setStats] = useState<Stats>(BLANK_STATS);
   const [raiseTo, setRaiseTo] = useState<number | null>(null);
+  /**
+   * The hand before this one, kept so its verdicts don't vanish the moment you
+   * deal again. Most hands only make sense once they're over, and clicking
+   * "Next hand" used to throw away the explanation you were still reading.
+   */
+  const [lastHand, setLastHand] = useState<Session | null>(null);
+  /**
+   * All-in is one click away from your entire stack, and it sits next to three
+   * ordinary bet sizes. It asks twice.
+   */
+  const [armedAllIn, setArmedAllIn] = useState(false);
   const store = useStore();
   const now = useNow();
   const lifetime = summarize(store, now);
+  // Which overlays are on is remembered rather than reset every visit - having
+  // to switch the training wheels back off on every reload would be its own
+  // small punishment for making progress.
+  const settings: XraySettings = store.settings;
+  const setSettings = saveSettings;
   const [watching, setWatching] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -181,8 +199,12 @@ export default function PlayPage() {
   const deal = useCallback(
     (count: number, button: number, handNo: number) => {
       const next = startHand(count, button, handNo, rng);
-      setSession(next);
+      setSession((previous) => {
+        if (previous.state.complete) setLastHand(previous);
+        return next;
+      });
       setRaiseTo(null);
+      setArmedAllIn(false);
       // Everyone can fold round before the hero ever gets to speak. That's still
       // a hand played, and it still moves the blinds, so it has to count.
       if (next.state.complete) {
@@ -281,8 +303,16 @@ export default function PlayPage() {
           raised,
         });
       }
-      setSession({ ...session, ...advanced, feedback: graded, heroVoluntary: voluntary, heroRaised: raised });
+      setSession({
+        ...session,
+        ...advanced,
+        feedback: graded,
+        decisions: graded ? [...session.decisions, graded] : session.decisions,
+        heroVoluntary: voluntary,
+        heroRaised: raised,
+      });
       setRaiseTo(null);
+      setArmedAllIn(false);
       setBusy(false);
     },
     [isHeroTurn, busy, state, session, rng]
@@ -343,6 +373,8 @@ export default function PlayPage() {
         seat,
         name: seat === HERO ? 'You' : session.lineup[seat]?.name ?? 'Player',
         label: seat === HERO ? 'You' : session.lineup[seat]?.tag ?? 'Player',
+        blurb: seat === HERO ? undefined : session.lineup[seat]?.blurb,
+        counter: seat === HERO ? undefined : session.lineup[seat]?.counter,
         isHero: seat === HERO,
         showCards: seat === HERO || settings.showOpponentCards || watching,
       })),
@@ -380,16 +412,26 @@ export default function PlayPage() {
               </b>
             </span>
             {bb100 !== null && (
-              <span className="text-[13px] text-[var(--color-ink-faint)]">
+              <span
+                className="text-[13px] text-[var(--color-ink-faint)]"
+                title="Big blinds won per 100 hands. A strong live player makes 5-10. Over a short session this swings wildly."
+              >
                 Rate{' '}
                 <b className={`tnum ${bb100 >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]'}`}>
                   {bb100 >= 0 ? '+' : ''}{bb100.toFixed(0)} bb/100
                 </b>
+                {stats.hands < 30 && (
+                  <span className="text-[var(--color-ink-faint)]"> · too few hands to mean much</span>
+                )}
               </span>
             )}
             {accuracy !== null && (
-              <span className="text-[13px] text-[var(--color-ink-faint)]">
+              <span
+                className="text-[13px] text-[var(--color-ink-faint)]"
+                title="Share of your decisions that were the best available option. Above 70% is solid."
+              >
                 Best play <b className="tnum text-[var(--color-ink)]">{accuracy.toFixed(0)}%</b>
+                <span className="text-[var(--color-ink-faint)]"> of 70%+</span>
               </span>
             )}
             {stats.decisions > 0 && (
@@ -435,12 +477,12 @@ export default function PlayPage() {
             onChange={changeTableSize}
           />
           <Button
-            tone={watching ? 'primary' : 'ghost'}
+            tone={watching ? 'primary' : 'quiet'}
             size="sm"
-            onClick={() => { setWatching((w) => !w); setRaiseTo(null); }}
-            title="Sit out and watch the bots play each other"
+            onClick={() => { setWatching((w) => !w); setRaiseTo(null); setArmedAllIn(false); }}
+            title="Sit out and watch the bots play a hand against each other, all cards face up. The easiest way to see how a hand actually unfolds."
           >
-            {watching ? 'Watching' : 'Watch'}
+            {watching ? 'Watching — click to play' : 'Watch a hand'}
           </Button>
         </div>
       </div>
@@ -540,17 +582,37 @@ export default function PlayPage() {
                     </Button>
                   ))}
                   {sizings.length > 0 && <span className="mx-1 h-6 w-px bg-[var(--color-line)]" />}
-                  {sizings.map((p) => (
-                    <Button
-                      key={p.label}
-                      tone="accent"
-                      size="lg"
-                      onClick={() => act({ type: raiseOpt!.type, amount: p.amount })}
-                      title={`${raiseOpt!.type === 'bet' ? 'Bet' : 'Raise to'} ${p.amount}`}
-                    >
-                      {p.label}
-                    </Button>
-                  ))}
+                  {sizings.map((p) => {
+                    const isShove = p.label === 'All in';
+                    if (isShove) {
+                      return (
+                        <Button
+                          key={p.label}
+                          tone={armedAllIn ? 'danger' : 'accent'}
+                          size="lg"
+                          onClick={() => {
+                            if (armedAllIn) act({ type: raiseOpt!.type, amount: p.amount });
+                            else setArmedAllIn(true);
+                          }}
+                          onBlur={() => setArmedAllIn(false)}
+                          title={`Move all ${p.amount} in`}
+                        >
+                          {armedAllIn ? `Confirm all in (${p.amount})` : 'All in'}
+                        </Button>
+                      );
+                    }
+                    return (
+                      <Button
+                        key={p.label}
+                        tone="accent"
+                        size="lg"
+                        onClick={() => act({ type: raiseOpt!.type, amount: p.amount })}
+                        title={`${raiseOpt!.type === 'bet' ? 'Bet' : 'Raise to'} ${p.amount}`}
+                      >
+                        {p.label}
+                      </Button>
+                    );
+                  })}
                 </div>
 
                 {raiseOpt && raiseOpt.max! > raiseOpt.min! && (
@@ -659,6 +721,78 @@ export default function PlayPage() {
               </ol>
             </Panel>
           </div>
+
+          {/* ---- The hand before this one ---- */}
+          {lastHand && lastHand.state.result && (
+            <div className="mt-4">
+              <Panel pad={false}>
+                <details className="group">
+                  <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-3 text-[13px]">
+                    <span className="eyebrow">Hand {lastHand.handNo}</span>
+                    <span
+                      className={`tnum font-medium ${
+                        netResult(lastHand.state)[HERO] > 0
+                          ? 'text-[var(--color-good)]'
+                          : netResult(lastHand.state)[HERO] < 0
+                            ? 'text-[var(--color-bad)]'
+                            : 'text-[var(--color-ink-muted)]'
+                      }`}
+                    >
+                      {netResult(lastHand.state)[HERO] > 0 ? '+' : ''}
+                      {(netResult(lastHand.state)[HERO] / BIG_BLIND).toFixed(1)} bb
+                    </span>
+                    {lastHand.decisions.length > 0 && (
+                      <span className="flex gap-1">
+                        {lastHand.decisions.map((d, i) => (
+                          <span
+                            key={i}
+                            title={d.headline}
+                            className="h-2 w-2 rounded-full"
+                            style={{ background: VERDICT[d.verdict].bar }}
+                          />
+                        ))}
+                      </span>
+                    )}
+                    <span className="ml-auto text-[11px] text-[var(--color-ink-faint)] group-open:hidden">
+                      look again
+                    </span>
+                  </summary>
+                  <div className="border-t border-[var(--color-line)] px-5 py-3">
+                    <ol className="space-y-0.5 text-[12px] text-[var(--color-ink-muted)]">
+                      {lastHand.state.log.map((entry, i) => (
+                        <li
+                          key={i}
+                          className={
+                            entry.kind === 'result'
+                              ? 'font-medium text-[var(--color-good)]'
+                              : entry.seat === HERO
+                                ? 'text-[var(--color-ink)]'
+                                : ''
+                          }
+                        >
+                          {entry.text}
+                          {entry.seat === HERO && (
+                            <span className="ml-1 text-[var(--color-ink-faint)]">(you)</span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                    {lastHand.decisions.map((d, i) => (
+                      <div key={i} className="mt-3 border-t border-[var(--color-line)] pt-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge tone={VERDICT[d.verdict].tone}>{VERDICT[d.verdict].label}</Badge>
+                          <span className="text-[13px] font-medium">{d.headline}</span>
+                        </div>
+                        <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
+                          <Annotated text={d.detail} />
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </Panel>
+            </div>
+          )}
 
           {/* ---- Saved mistakes ---- */}
           {store.spots.length > 0 && (

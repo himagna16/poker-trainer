@@ -4,14 +4,36 @@ import React from 'react';
 import { CardRow } from './CardView';
 import type { HandState } from '@/lib/poker/engine';
 import {
-  positionLabel, currentPots, livePlayers, STREET_NAMES,
+  positionLabel, positionName, currentPots, livePlayers, STREET_NAMES,
 } from '@/lib/poker/engine';
 import { evaluate, describeHand } from '@/lib/poker/evaluator';
+
+/**
+ * What each seat means, in one line, for the hover card.
+ *
+ * Deliberately about the CONSEQUENCE rather than the geometry. Knowing the
+ * cutoff sits right of the button is trivia; knowing it acts late and so can
+ * play more hands is the thing that changes how you play.
+ */
+const POSITION_BLURBS: Record<string, string> = {
+  BTN: 'acts last on every street after the flop, which is why it can play the most hands.',
+  SB: 'has already paid half a blind, but acts first on every street after the flop.',
+  BB: 'has paid a full blind, so gets a discount to defend — but plays the rest of the hand out of position.',
+  UTG: 'first to speak, with everyone still behind. The tightest seat at the table.',
+  'UTG+1': 'second to speak, with almost everyone still behind. Play tight here.',
+  MP: 'somewhere in the middle — more room than under the gun, less than the cutoff.',
+  LJ: 'a few seats off the button. Getting late enough to open up a little.',
+  HJ: 'two off the button. Late enough to open fairly wide.',
+  CO: 'one off the button, and the second-best seat at the table.',
+};
 
 export interface SeatView {
   seat: number;
   /** Full name, used for the tooltip. */
   name: string;
+  /** What this player is like, and how to beat them. Absent for the hero. */
+  blurb?: string;
+  counter?: string;
   /** Short label shown on the plaque - the player TYPE, which is what you
    *  actually want to read at a glance across a nine-handed table. */
   label: string;
@@ -73,7 +95,10 @@ export function PokerTable({
 
   return (
     <div
-      className={`felt seat-ring lift-lg relative ${heightClass} overflow-hidden rounded-[2rem] border border-[var(--color-felt-rail)] sm:rounded-[2.5rem]`}
+      // No overflow-hidden: it was clipping the tooltips that explain each seat,
+      // and nothing here actually needed it. The gradient and the inner shadow
+      // are both clipped by border-radius on their own.
+      className={`felt seat-ring lift-lg relative ${heightClass} rounded-[2rem] border border-[var(--color-felt-rail)] sm:rounded-[2.5rem]`}
     >
       {/* Inner rail, so the felt reads as a table rather than a green rectangle. */}
       <div className="pointer-events-none absolute inset-3 rounded-[2rem] border border-white/[0.07]" />
@@ -135,11 +160,16 @@ export function PokerTable({
           />
         );
 
+        // Anchor the tooltip away from the nearest edge so it can't run off the
+        // side of the table on the outer seats.
+        const anchor =
+          cos > 0.3 ? 'right-0' : cos < -0.3 ? 'left-0' : 'left-1/2 -translate-x-1/2';
+        const vertical = inTopHalf ? 'top-full mt-2' : 'bottom-full mb-2';
+
         const plaque = (
           <div
             key="plaque"
-            title={view.name}
-            className={`rounded-lg border px-1.5 py-1 text-center backdrop-blur-sm transition sm:rounded-xl sm:px-2.5 sm:py-1.5 ${
+            className={`group relative rounded-lg border px-1.5 py-1 text-center backdrop-blur-sm transition sm:rounded-xl sm:px-2.5 sm:py-1.5 ${
               acting
                 ? 'acting border-transparent bg-[var(--color-lav)] text-[var(--color-lav-ink)]'
                 : 'border-white/10 bg-black/35 text-white'
@@ -166,6 +196,37 @@ export function PokerTable({
               {positionLabel(state, seat)} · {state.stack[seat]}
               {state.allIn[seat] && ' · all in'}
             </div>
+
+            {/* Hovering a seat is how the abbreviations and the opponent types
+                stop being jargon. These are the terms a new player meets first,
+                and until now there was no way to look them up in place. */}
+            <span
+              role="tooltip"
+              className={`lift-lg pointer-events-none absolute z-40 w-60 rounded-xl border border-[var(--color-line)] bg-[var(--color-surface)] p-3 text-left opacity-0 transition-opacity duration-150 group-hover:opacity-100 ${anchor} ${vertical}`}
+            >
+              <span className="block text-[13px] font-medium text-[var(--color-ink)]">
+                {view.name}
+                {!view.isHero && (
+                  <span className="ml-1.5 font-normal text-[var(--color-ink-faint)]">{view.label}</span>
+                )}
+              </span>
+              <span className="mt-1 block text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+                <b className="text-[var(--color-ink)]">{positionName(state, seat)}</b>
+                {' — '}
+                {POSITION_BLURBS[positionLabel(state, seat)] ?? 'a seat at the table.'}
+              </span>
+              {view.blurb && (
+                <span className="mt-1.5 block text-[11px] leading-relaxed text-[var(--color-ink-muted)]">
+                  {view.blurb}
+                </span>
+              )}
+              {view.counter && (
+                <span className="mt-1.5 block rounded-lg bg-[var(--color-good-soft)] px-2 py-1.5 text-[11px] leading-relaxed text-[var(--color-good)]">
+                  <b>Against them: </b>
+                  {view.counter}
+                </span>
+              )}
+            </span>
           </div>
         );
 

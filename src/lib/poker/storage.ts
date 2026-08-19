@@ -27,6 +27,8 @@
 import { useSyncExternalStore } from 'react';
 import type { Verdict } from './grade';
 import type { SpotSnapshot } from './spots';
+import type { XraySettings } from './settings';
+import { DEFAULT_SETTINGS, normalizeSettings } from './settings';
 
 const KEY = 'pocket-odds/v1';
 const MAX_SPOTS = 300;
@@ -69,6 +71,8 @@ export interface Store {
   spots: SavedSpot[];
   /** Has the short orientation note been dismissed? */
   introSeen: boolean;
+  /** Which training wheels were on last time. */
+  settings: XraySettings;
 }
 
 const EMPTY_LIFETIME: LifetimeStats = {
@@ -85,10 +89,24 @@ const EMPTY_LIFETIME: LifetimeStats = {
  * otherwise see the orientation note flash up and vanish. Better to withhold it
  * for a frame and then show it than to show it and snatch it away.
  */
-const SERVER_STORE: Store = { version: 1, lifetime: EMPTY_LIFETIME, spots: [], introSeen: true };
+const SERVER_STORE: Store = {
+  version: 1,
+  lifetime: EMPTY_LIFETIME,
+  spots: [],
+  introSeen: true,
+  // The first-visit default, so a new visitor's panel doesn't rearrange itself
+  // the instant the page hydrates.
+  settings: DEFAULT_SETTINGS,
+};
 
 function freshStore(): Store {
-  return { version: 1, lifetime: { ...EMPTY_LIFETIME }, spots: [], introSeen: false };
+  return {
+    version: 1,
+    lifetime: { ...EMPTY_LIFETIME },
+    spots: [],
+    introSeen: false,
+    settings: { ...DEFAULT_SETTINGS },
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -165,6 +183,7 @@ function load(): Store {
       lifetime: { ...EMPTY_LIFETIME, ...parsed.lifetime },
       spots: Array.isArray(parsed.spots) ? parsed.spots : [],
       introSeen: parsed.introSeen === true,
+      settings: normalizeSettings(parsed.settings) ?? { ...DEFAULT_SETTINGS },
     };
   } catch {
     // Corrupt or unreadable data shouldn't take the app down with it.
@@ -331,6 +350,10 @@ export function reviewSpot(id: string, correct: boolean): void {
 export function forgetSpot(id: string): void {
   const store = getSnapshot();
   persist({ ...store, spots: store.spots.filter((s) => s.id !== id) });
+}
+
+export function saveSettings(settings: XraySettings): void {
+  persist({ ...getSnapshot(), settings });
 }
 
 export function dismissIntro(): void {
