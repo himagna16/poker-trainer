@@ -34,7 +34,15 @@ export interface SpotSnapshot {
   button: number;
   heroSeat: number;
   bigBlind: number;
-  startingStack: number;
+  /**
+   * Starting stack for EVERY seat, not just the hero.
+   *
+   * Storing one number and applying it to the whole table quietly gives every
+   * opponent the hero's stack when it comes back, which changes the maximum
+   * legal bet and so changes which actions are on offer. Invisible while every
+   * seat starts equal, wrong the moment they don't.
+   */
+  startStacks: number[];
   /** Hole cards per seat, as "AhKd". */
   holes: string[];
   board: string;
@@ -42,6 +50,9 @@ export interface SpotSnapshot {
   committed: number[];
   folded: boolean[];
   allIn: boolean[];
+  acted: boolean[];
+  frozen: boolean[];
+  lastRaiseSize: number;
   street: Street;
   toAct: number;
   /** Persona id per seat; null for the hero. */
@@ -93,7 +104,10 @@ export interface StateSpec {
   playerCount: number;
   button?: number;
   bigBlind?: number;
+  /** Same starting stack for every seat. Ignored if startStacks is given. */
   startingStack?: number;
+  /** Per-seat starting stacks, for tables where they differ. */
+  startStacks?: number[];
   /** Hole cards by seat, as "AsKd". Seats left out get whatever is spare. */
   holes: Record<number, string>;
   board?: string;
@@ -101,6 +115,16 @@ export interface StateSpec {
   committed?: number[];
   folded?: boolean[];
   allIn?: boolean[];
+  /** Who has already acted since the last raise. Affects when the round closes. */
+  acted?: boolean[];
+  /**
+   * Who faced an all-in raise too small to reopen betting, and so may only call
+   * or fold. Leaving this out silently hands them back a raise they were not
+   * allowed to make.
+   */
+  frozen?: boolean[];
+  /** Size of the last full raise, which sets the minimum legal re-raise. */
+  lastRaiseSize?: number;
   street: Street;
   toAct: number;
 }
@@ -115,6 +139,7 @@ export interface StateSpec {
 export function buildState(spec: StateSpec): HandState {
   const n = spec.playerCount;
   const stack0 = spec.startingStack ?? 200;
+  const startStacks = spec.startStacks ?? new Array<number>(n).fill(stack0);
   const s = newHand({
     playerCount: n,
     startingStack: stack0,
@@ -142,12 +167,13 @@ export function buildState(spec: StateSpec): HandState {
   s.committed = spec.committed ? [...spec.committed] : new Array(n).fill(0);
   s.folded = spec.folded ? [...spec.folded] : new Array(n).fill(false);
   s.allIn = spec.allIn ? [...spec.allIn] : new Array(n).fill(false);
-  s.acted = new Array(n).fill(false);
-  s.frozen = new Array(n).fill(false);
-  s.stack = spec.invested.map((v) => stack0 - v);
+  s.acted = spec.acted ? [...spec.acted] : new Array(n).fill(false);
+  s.frozen = spec.frozen ? [...spec.frozen] : new Array(n).fill(false);
+  s.startStack = [...startStacks];
+  s.stack = startStacks.map((start, seat) => start - spec.invested[seat]);
   s.pot = spec.invested.reduce((a, b) => a + b, 0);
   s.betToMatch = Math.max(0, ...s.committed);
-  s.lastRaiseSize = s.bigBlind;
+  s.lastRaiseSize = spec.lastRaiseSize ?? s.bigBlind;
   s.toAct = spec.toAct;
   s.complete = false;
   s.result = null;
@@ -176,13 +202,16 @@ export function captureSpot(
     button: state.button,
     heroSeat,
     bigBlind: state.bigBlind,
-    startingStack: state.startStack[heroSeat],
+    startStacks: [...state.startStack],
     holes: state.hole.map((h) => cardsToString(h)),
     board: cardsToString(state.board),
     invested: [...state.invested],
     committed: [...state.committed],
     folded: [...state.folded],
     allIn: [...state.allIn],
+    acted: [...state.acted],
+    frozen: [...state.frozen],
+    lastRaiseSize: state.lastRaiseSize,
     street: state.street,
     toAct: state.toAct,
     personaIds: lineup.map((p) => p?.id ?? null),
@@ -203,17 +232,29 @@ export function restoreSpot(snapshot: SpotSnapshot): RestoredSpot {
   const holes: Record<number, string> = {};
   snapshot.holes.forEach((h, seat) => { holes[seat] = h; });
 
+  // Spots saved before startStacks existed carry a single startingStack. Fall
+  // back to it rather than throwing away a saved mistake.
+  const legacyStack = (snapshot as unknown as { startingStack?: number }).startingStack;
+  const startStacks =
+    snapshot.startStacks ??
+    new Array<number>(snapshot.playerCount).fill(legacyStack ?? 200);
+
   const state = buildState({
     playerCount: snapshot.playerCount,
     button: snapshot.button,
     bigBlind: snapshot.bigBlind,
-    startingStack: snapshot.startingStack,
+    startStacks,
     holes,
     board: snapshot.board,
     invested: snapshot.invested,
     committed: snapshot.committed,
     folded: snapshot.folded,
     allIn: snapshot.allIn,
+    // Older saved spots predate these fields; the defaults in buildState are
+    // the right fallback rather than a reason to discard the whole spot.
+    acted: snapshot.acted,
+    frozen: snapshot.frozen,
+    lastRaiseSize: snapshot.lastRaiseSize,
     street: snapshot.street,
     toAct: snapshot.toAct,
   });

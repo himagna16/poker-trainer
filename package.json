@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run test:evaluator && npm run test:equity && npm run test:engine && npm run test:bots && npm run test:grade && npm run test:drills && npm run test:memory",
+    "test": "npm run test:evaluator && npm run test:equity && npm run test:engine && npm run test:bots && npm run test:grade && npm run test:drills && npm run test:memory && npm run test:soak",
     "test:evaluator": "tsx scripts/test-evaluator.ts",
     "test:equity": "tsx scripts/test-equity.ts",
     "test:engine": "tsx scripts/test-engine.ts",
@@ -15,7 +15,8 @@
     "test:grade": "tsx scripts/test-grade.ts",
     "test:drills": "tsx scripts/test-drills.ts",
     "gen:preflop": "tsx scripts/generate-preflop-table.ts",
-    "test:memory": "tsx scripts/test-memory.ts"
+    "test:memory": "tsx scripts/test-memory.ts",
+    "test:soak": "tsx scripts/test-soak.ts"
   },
   "dependencies": {
     "next": "16.3.1",

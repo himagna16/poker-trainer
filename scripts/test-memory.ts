@@ -56,8 +56,18 @@ console.log('Snapshot round-trip - a saved spot must come back identical.\n');
   check('stacks survive', restored.state.stack.join() === state.stack.join());
   check('to-call survives', toCall(restored.state, 0) === toCall(state, 0),
     `${toCall(restored.state, 0)} vs ${toCall(state, 0)}`);
-  check('the same actions are legal',
-    legalActions(restored.state).map((a) => a.type).join() === legalActions(state).map((a) => a.type).join());
+  // Compare the actions in FULL, including the legal bet range. Comparing only
+  // the action types hid a bug for a while: the snapshot stored one starting
+  // stack and handed it to every seat, so opponents came back with the wrong
+  // chip counts and the maximum legal bet silently changed.
+  const describeActions = (st: typeof state) =>
+    legalActions(st).map((a) => `${a.type}:${a.amount}:${a.min ?? '-'}:${a.max ?? '-'}`).join(' | ');
+  check('the same actions are legal, with the same bet range',
+    describeActions(restored.state) === describeActions(state),
+    describeActions(restored.state));
+  check('every seat gets its own starting stack back',
+    restored.state.startStack.join() === state.startStack.join(),
+    `${restored.state.startStack.join()} vs ${state.startStack.join()}`);
   check('side pot structure survives',
     JSON.stringify(currentPots(restored.state)) === JSON.stringify(currentPots(state)));
   check('the chosen action survives',
@@ -86,6 +96,27 @@ console.log('Snapshot round-trip - a saved spot must come back identical.\n');
   check('EV agrees to within a fraction of a big blind',
     Math.abs(original.evLostVsRange - replay.evLostVsRange) < 0.35,
     `${original.evLostVsRange.toFixed(2)} vs ${replay.evLostVsRange.toFixed(2)} bb`);
+
+  // The same round-trip with UNEQUAL stacks, which is what exposed the bug.
+  {
+    const uneven = buildSpot({
+      playerCount: 4, heroSeat: 0, button: 0, street: 1,
+      holes: { 0: 'AhKh', 2: 'QsQd' }, board: 'Kd8s4c',
+      startStacks: [400, 120, 260, 90],
+      invested: [40, 0, 40, 20], committed: [40, 0, 40, 20],
+      folded: [false, true, false, false], toAct: 0,
+    });
+    const lu = uniformLineup(4, 0, 'tag');
+    const bk = uniformBook(uneven, 0, 0.3);
+    const rt = restoreSpot(captureSpot(uneven, 0, lu, bk, { type: 'call', amount: 0 }));
+    check('uneven stacks survive the round-trip',
+      rt.state.startStack.join() === uneven.startStack.join(),
+      `${rt.state.startStack.join()} vs ${uneven.startStack.join()}`);
+    check('and the legal bet range matches',
+      legalActions(rt.state).map((a) => `${a.type}:${a.min ?? '-'}:${a.max ?? '-'}`).join() ===
+      legalActions(uneven).map((a) => `${a.type}:${a.min ?? '-'}:${a.max ?? '-'}`).join(),
+      legalActions(rt.state).map((a) => a.label).join(' | '));
+  }
 
   const described = describeSnapshot(snapshot);
   check('describes itself for the review list',
