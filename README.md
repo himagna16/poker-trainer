@@ -30,6 +30,16 @@ calls everything, a maniac, and two competent regulars — each with a note on h
 to beat them. The same 7-high on the same board is a shove against one and a
 check against another, and the trainer will tell you so.
 
+**It remembers, and it replays your mistakes.** Every decision graded worse than
+"close enough" is saved with the whole situation intact — the cards, the money,
+and what each opponent's range looked like at the time — then comes back later
+as a drill. Get it right and the next showing moves further out; get it wrong
+and it returns sooner. That's spaced repetition, pointed at exactly the gaps you
+have rather than the average player's.
+
+Lifetime hands, win rate, decision accuracy and VPIP/PFR persist across sessions
+too. All of it lives in your browser: no account, nothing sent anywhere.
+
 **Drills.** Play-or-fold, price check, count-the-outs and guess-the-odds, for
 when you want two hundred decisions instead of twenty.
 
@@ -84,6 +94,18 @@ way had the app teaching the opposite of every serious preflop chart.
 Multiply through and the range reweights itself. It's Bayes' rule, reusing the
 decision function rather than needing a second model of the opponent.
 
+**`spots.ts`** — freezes a decision point small enough to store by the hundred.
+Ranges are collapsed from 1,326 weighted combinations to the 169 distinct hand
+types, which loses a little card-removal precision and saves roughly forty times
+the space. A saved spot is about 7KB, so thousands fit in browser storage.
+
+**`storage.ts`** — reads localStorage through `useSyncExternalStore` rather than
+copying it into state from an effect. localStorage is an external system that
+can change from another tab; the effect approach renders once with the wrong
+data before correcting itself and silently ignores changes made elsewhere. The
+same file exposes the clock the same way, so relative times like "ready in 2h"
+update on their own and never make a render impure.
+
 **`grade.ts`** — rollout-based best response, using common random numbers across
 candidate actions so the *difference* between two options is measured far more
 precisely than either absolute value. Fold equity is computed exactly as the
@@ -103,6 +125,7 @@ conserved in every single hand.
 | `test:bots` | opening ranges widen 18% → 42% from under the gun to the button; realistic VPIP/PFR; self-consistent win matrix |
 | `test:grade` | folding is exactly 0 EV; the same bluff is +14bb against a rock and −13bb against a station; fold equity collapses 55% → 20% as opponents are added |
 | `test:drills` | every drill generator terminates and stays fast |
+| `test:memory` | a saved spot round-trips to the same verdict, same recommendation and same EV; review intervals lengthen on success and shorten on failure |
 
 ## Design
 
@@ -122,5 +145,8 @@ It isn't a solver, and it won't teach you game-theory-optimal play. The bots are
 deliberately exploitable, which means the trainer will sometimes recommend an
 aggressive line that is correct against *them* and reckless against a real
 player — where that happens, the interface says so.
+
+Your history is stored in one browser. It doesn't follow you to another device,
+and clearing your browser data clears it.
 
 Play money only. Nothing here can be wagered, deposited, or cashed out.

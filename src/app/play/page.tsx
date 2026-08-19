@@ -6,12 +6,12 @@ import type { SeatView } from '@/components/Table';
 import { TrainingPanel, PRESETS } from '@/components/TrainingPanel';
 import type { XraySettings } from '@/components/TrainingPanel';
 import { Annotated } from '@/components/Term';
+import Link from 'next/link';
 import { Panel, PanelTitle, Button, Badge, Segmented } from '@/components/ui';
 import { makeRng } from '@/lib/poker/cards';
 import {
   newHand, applyAction, legalActions, toCall, netResult, livePlayers,
-  positionName, STREET_NAMES,
-} from '@/lib/poker/engine';
+  positionName, } from '@/lib/poker/engine';
 import type { HandState, Action } from '@/lib/poker/engine';
 import { getPersona, botAction, tableLineup } from '@/lib/poker/bots';
 import { newRangeBook, updateBookForAction, pruneBook } from '@/lib/poker/ranges';
@@ -19,7 +19,10 @@ import type { RangeBook } from '@/lib/poker/ranges';
 import { gradeDecision, equityForDisplay } from '@/lib/poker/grade';
 import type { DecisionGrade, Lineup, Verdict } from '@/lib/poker/grade';
 import { findOuts, requiredEquity } from '@/lib/poker/equity';
-import { handNotation } from '@/lib/poker/cards';
+import { captureSpot, describeSnapshot } from '@/lib/poker/spots';
+import {
+  useStore, useNow, recordDecision, recordHand, saveSpot, summarize, formatWhen,
+} from '@/lib/poker/storage';
 
 const HERO = 0;
 const START_STACK = 200;
@@ -32,6 +35,9 @@ interface Session {
   button: number;
   feedback: DecisionGrade | null;
   handNo: number;
+  /** Did the hero put money in before the flop by choice, and did they raise? */
+  heroVoluntary: boolean;
+  heroRaised: boolean;
 }
 
 interface Stats {
@@ -44,18 +50,6 @@ interface Stats {
   evLost: number;
   vpip: number;
   pfr: number;
-}
-
-interface ReviewItem {
-  id: number;
-  handNo: number;
-  street: string;
-  position: string;
-  hand: string;
-  headline: string;
-  detail: string;
-  lost: number;
-  verdict: Verdict;
 }
 
 const BLANK_STATS: Stats = {
@@ -116,7 +110,7 @@ function startHand(
   });
   const book = newRangeBook(state, HERO);
   const advanced = advanceBots(state, book, lineup, HERO, rng);
-  return { ...advanced, lineup, button: button % playerCount, feedback: null, handNo };
+  return { ...advanced, lineup, button: button % playerCount, feedback: null, handNo, heroVoluntary: false, heroRaised: false };
 }
 
 export default function PlayPage() {
@@ -125,8 +119,10 @@ export default function PlayPage() {
   const [settings, setSettings] = useState<XraySettings>(PRESETS[0].settings);
   const [session, setSession] = useState<Session>(() => startHand(6, 0, 1, makeRng(20260819)));
   const [stats, setStats] = useState<Stats>(BLANK_STATS);
-  const [review, setReview] = useState<ReviewItem[]>([]);
   const [raiseTo, setRaiseTo] = useState<number | null>(null);
+  const store = useStore();
+  const now = useNow();
+  const lifetime = summarize(store, now);
   const [watching, setWatching] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -140,8 +136,19 @@ export default function PlayPage() {
 
   const deal = useCallback(
     (count: number, button: number, handNo: number) => {
-      setSession(startHand(count, button, handNo, rng));
+      const next = startHand(count, button, handNo, rng);
+      setSession(next);
       setRaiseTo(null);
+      // Everyone can fold round before the hero ever gets to speak. That's still
+      // a hand played, and it still moves the blinds, so it has to count.
+      if (next.state.complete) {
+        recordHand({
+          netChips: netResult(next.state)[HERO],
+          bigBlind: BIG_BLIND,
+          voluntary: false,
+          raised: false,
+        });
+      }
     },
     [rng]
   );
@@ -150,7 +157,6 @@ export default function PlayPage() {
     (count: number) => {
       setPlayerCount(count);
       setStats(BLANK_STATS);
-      setReview([]);
       deal(count, 0, 1);
     },
     [deal]
@@ -186,6 +192,13 @@ export default function PlayPage() {
       const applied = applyAction(state, action);
       const advanced = advanceBots(applied, session.book, session.lineup, HERO, rng);
 
+      const voluntary =
+        session.heroVoluntary ||
+        (state.street === 0 && action.type !== 'fold' && action.type !== 'check');
+      const raised =
+        session.heroRaised ||
+        (state.street === 0 && (action.type === 'raise' || action.type === 'bet'));
+
       if (graded) {
         setStats((s) => ({
           ...s,
@@ -194,30 +207,37 @@ export default function PlayPage() {
           mistakes: s.mistakes + (graded.verdict === 'mistake' ? 1 : 0),
           blunders: s.blunders + (graded.verdict === 'blunder' ? 1 : 0),
           evLost: s.evLost + Math.max(0, graded.evLostVsRange),
-          vpip: s.vpip + (state.street === 0 && action.type !== 'fold' && action.type !== 'check' ? 1 : 0),
-          pfr: s.pfr + (state.street === 0 && (action.type === 'raise' || action.type === 'bet') ? 1 : 0),
+          vpip: s.vpip + (voluntary && !session.heroVoluntary ? 1 : 0),
+          pfr: s.pfr + (raised && !session.heroRaised ? 1 : 0),
         }));
+        recordDecision({
+          verdict: graded.verdict,
+          evLostBB: graded.evLostVsRange,
+          preflopVoluntary: voluntary,
+          preflopRaise: raised,
+        });
+        // Anything worse than "close enough" gets kept so it can be replayed.
+        // We capture the situation BEFORE the action, which is the spot you
+        // actually have to solve when it comes back around.
         if (graded.verdict === 'mistake' || graded.verdict === 'blunder') {
-          setReview((r) => [
-            {
-              id: r.length,
-              handNo: session.handNo,
-              street: STREET_NAMES[state.street],
-              position: positionName(state, HERO),
-              hand: handNotation(state.hole[HERO][0], state.hole[HERO][1]),
-              headline: graded.headline,
-              detail: graded.detail,
-              lost: graded.evLostVsRange,
-              verdict: graded.verdict,
-            },
-            ...r,
-          ].slice(0, 40));
+          saveSpot({
+            verdict: graded.verdict,
+            lostBB: graded.evLostVsRange,
+            headline: graded.headline,
+            snapshot: captureSpot(state, HERO, session.lineup, session.book, action),
+          });
         }
       }
       if (advanced.state.complete) {
         setStats((s) => ({ ...s, hands: s.hands + 1, net: s.net + netResult(advanced.state)[HERO] }));
+        recordHand({
+          netChips: netResult(advanced.state)[HERO],
+          bigBlind: BIG_BLIND,
+          voluntary,
+          raised,
+        });
       }
-      setSession({ ...session, ...advanced, feedback: graded });
+      setSession({ ...session, ...advanced, feedback: graded, heroVoluntary: voluntary, heroRaised: raised });
       setRaiseTo(null);
       setBusy(false);
     },
@@ -338,6 +358,21 @@ export default function PlayPage() {
                 VPIP <b className="tnum text-[var(--color-ink)]">{((stats.vpip / stats.hands) * 100).toFixed(0)}%</b>
                 {' / '}
                 PFR <b className="tnum text-[var(--color-ink)]">{((stats.pfr / stats.hands) * 100).toFixed(0)}%</b>
+              </span>
+            )}
+
+            {lifetime.hands > stats.hands && (
+              <span className="ml-auto border-l border-[var(--color-line)] pl-5 text-[13px] text-[var(--color-ink-faint)]">
+                All time{' '}
+                <b className="tnum text-[var(--color-ink)]">{lifetime.hands.toLocaleString()}</b> hands
+                {lifetime.bb100 !== null && (
+                  <>
+                    {', '}
+                    <b className={`tnum ${lifetime.bb100 >= 0 ? 'text-[var(--color-good)]' : 'text-[var(--color-bad)]'}`}>
+                      {lifetime.bb100 >= 0 ? '+' : ''}{lifetime.bb100.toFixed(0)} bb/100
+                    </b>
+                  </>
+                )}
               </span>
             )}
           </div>
@@ -544,42 +579,56 @@ export default function PlayPage() {
             </Panel>
           </div>
 
-          {/* ---- Session review ---- */}
-          {review.length > 0 && (
+          {/* ---- Saved mistakes ---- */}
+          {store.spots.length > 0 && (
             <div className="mt-4">
               <Panel>
                 <PanelTitle
                   right={
-                    <span className="text-[11px] text-[var(--color-ink-faint)]">
-                      {review.length} to look at
-                    </span>
+                    lifetime.due > 0 ? (
+                      <Link
+                        href="/drills"
+                        className="rounded-full bg-[var(--color-lav)] px-3 py-1 text-[11px] font-medium text-[var(--color-lav-ink)] transition hover:bg-[var(--color-lav-deep)] hover:text-white"
+                      >
+                        {lifetime.due} ready to replay →
+                      </Link>
+                    ) : lifetime.nextDueIn !== null ? (
+                      <span className="text-[11px] text-[var(--color-ink-faint)]">
+                        next replay in {formatWhen(lifetime.nextDueIn)}
+                      </span>
+                    ) : undefined
                   }
                 >
                   Spots worth revisiting
                 </PanelTitle>
-                <div className="space-y-2">
-                  {review.slice(0, 8).map((item) => (
-                    <details
-                      key={item.id}
-                      className="group rounded-xl border border-[var(--color-line)] px-3 py-2"
-                    >
-                      <summary className="flex cursor-pointer list-none items-center gap-2.5 text-[13px]">
+                <div className="space-y-1.5">
+                  {store.spots.slice(0, 6).map((item) => {
+                    const about = describeSnapshot(item.snapshot);
+                    const dueIn = item.dueAt - now;
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex flex-wrap items-center gap-2.5 rounded-xl border border-[var(--color-line)] px-3 py-2 text-[13px]"
+                      >
                         <Badge tone={VERDICT[item.verdict].tone}>{VERDICT[item.verdict].label}</Badge>
-                        <span className="tnum text-[var(--color-ink-faint)]">#{item.handNo}</span>
-                        <span className="font-medium">{item.hand}</span>
+                        <span className="font-medium">{about.hand}</span>
                         <span className="text-[var(--color-ink-faint)]">
-                          {item.position} · {item.street}
+                          {about.street} · {about.seats}-handed
                         </span>
                         <span className="tnum ml-auto text-[var(--color-warn)]">
-                          −{item.lost.toFixed(2)} bb
+                          −{item.lostBB.toFixed(2)} bb
                         </span>
-                      </summary>
-                      <p className="mt-2 border-t border-[var(--color-line)] pt-2 text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
-                        <Annotated text={item.detail} />
-                      </p>
-                    </details>
-                  ))}
+                        <span className="tnum w-16 shrink-0 text-right text-[11px] text-[var(--color-ink-faint)]">
+                          {item.retired ? 'learned' : dueIn <= 0 ? 'ready' : `in ${formatWhen(dueIn)}`}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
+                <p className="mt-2.5 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
+                  Every mistake is saved and comes back as a drill later — sooner if you get it wrong
+                  again, further out each time you get it right. Kept in this browser only.
+                </p>
               </Panel>
             </div>
           )}

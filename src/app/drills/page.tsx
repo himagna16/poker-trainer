@@ -1,9 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useState } from 'react';
 import { CardRow } from '@/components/CardView';
 import { Annotated } from '@/components/Term';
-import { Panel, Button, Badge, Segmented, Stat } from '@/components/ui';
+import { Panel, PanelTitle, Button, Badge, Segmented, Stat } from '@/components/ui';
 import { DRILLS, makeSpot, scoreGuess } from '@/lib/poker/drills';
 import type { DrillId, DrillSpot } from '@/lib/poker/drills';
 import { legalActions, toCall, positionName, positionLabel, livePlayers, STREET_NAMES } from '@/lib/poker/engine';
@@ -13,6 +14,28 @@ import type { Verdict } from '@/lib/poker/grade';
 import { describeHand, evaluate } from '@/lib/poker/evaluator';
 import { cardsToString } from '@/lib/poker/cards';
 import { requiredEquity, ruleOf2And4 } from '@/lib/poker/equity';
+import { restoreSpot } from '@/lib/poker/spots';
+import {
+  useStore, useNow, dueSpots, reviewSpot, summarize, formatWhen, resetEverything,
+} from '@/lib/poker/storage';
+
+/**
+ * The review drill isn't generated - it replays spots you actually got wrong,
+ * pulled from storage. That's the difference between practising poker and
+ * practising YOUR poker.
+ */
+type PageDrill = DrillId | 'review';
+
+const REVIEW_META = {
+  id: 'review' as const,
+  name: 'Replay your mistakes',
+  blurb: 'The spots you got wrong, brought back.',
+  teaches:
+    'Your own errors, at the moment you have started to forget them. Get one right and it comes ' +
+    'back further away; get it wrong and it comes back sooner. This is the drill that actually ' +
+    'moves your win rate, because it targets exactly the gaps you have rather than the average ' +
+    "player's.",
+};
 
 interface Score { asked: number; right: number; streak: number; bestStreak: number }
 const BLANK: Score = { asked: 0, right: 0, streak: 0, bestStreak: 0 };
@@ -29,26 +52,55 @@ const VERDICT_TONE: Record<Verdict, 'good' | 'neutral' | 'warn' | 'bad'> = {
 };
 
 export default function DrillsPage() {
-  const [drill, setDrill] = useState<DrillId>('preflop');
+  const store = useStore();
+  const now = useNow();
+  const progress = summarize(store, now);
+  const [drill, setDrill] = useState<PageDrill>('preflop');
+  /** Set while replaying a saved mistake, so the answer can reschedule it. */
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const [tableSize, setTableSize] = useState(6);
   // A fixed seed for the first question so the server and browser agree.
   const [spot, setSpot] = useState<DrillSpot | null>(() => makeSpot('preflop', 20260819, 6));
   const [result, setResult] = useState<Result | null>(null);
   const [guess, setGuess] = useState('');
-  const [scores, setScores] = useState<Record<DrillId, Score>>({
-    preflop: { ...BLANK }, potodds: { ...BLANK }, outs: { ...BLANK }, equity: { ...BLANK },
+  const [scores, setScores] = useState<Record<PageDrill, Score>>({
+    preflop: { ...BLANK }, potodds: { ...BLANK }, outs: { ...BLANK },
+    equity: { ...BLANK }, review: { ...BLANK },
   });
 
-  const loadSpot = useCallback((id: DrillId, size: number) => {
+  const loadSpot = useCallback((id: PageDrill, size: number) => {
+    setResult(null);
+    setGuess('');
+
+    if (id === 'review') {
+      const due = dueSpots(store, Date.now());
+      if (due.length === 0) {
+        setSpot(null);
+        setReviewId(null);
+        return;
+      }
+      const saved = due[0];
+      const restored = restoreSpot(saved.snapshot);
+      setSpot({
+        kind: restored.state.street === 0 ? 'preflop' : 'potodds',
+        state: restored.state,
+        heroSeat: restored.heroSeat,
+        lineup: restored.lineup,
+        book: restored.book,
+      });
+      setReviewId(saved.id);
+      return;
+    }
+
+    setReviewId(null);
     let s: DrillSpot | null = null;
     let attempt = 0;
     while (!s && attempt++ < 8) s = makeSpot(id, Math.floor(Math.random() * 1e9), size);
     setSpot(s);
-    setResult(null);
-    setGuess('');
-  }, []);
+  }, [store]);
 
   const next = useCallback(() => loadSpot(drill, tableSize), [loadSpot, drill, tableSize]);
+  const reviewing = drill === 'review';
 
   const record = (correct: boolean) => {
     setScores((prev) => {
@@ -86,6 +138,8 @@ export default function DrillsPage() {
       rightIdea && graded.chosen && bestSame && bestSame.label !== graded.chosen.label && sizingGap > 0.15
         ? ` On sizing: ${bestSame.label} would have been worth another ${sizingGap.toFixed(2)} bb.`
         : '';
+
+    if (reviewId) reviewSpot(reviewId, correct);
 
     setResult({
       correct,
@@ -137,7 +191,7 @@ export default function DrillsPage() {
   };
 
   const score = scores[drill];
-  const meta = DRILLS.find((d) => d.id === drill)!;
+  const meta = reviewing ? REVIEW_META : DRILLS.find((d) => d.id === drill)!;
 
   return (
     <div className="mx-auto max-w-4xl px-4 pb-16 pt-6">
@@ -151,6 +205,39 @@ export default function DrillsPage() {
           you the hard one on its own, over and over.
         </p>
       </header>
+
+      <button
+        onClick={() => { setDrill('review'); loadSpot('review', tableSize); }}
+        className={`mb-2 flex w-full flex-wrap items-center gap-3 rounded-2xl border p-4 text-left transition ${
+          reviewing
+            ? 'border-[var(--color-ink)] bg-[var(--color-surface)] lift'
+            : 'border-[var(--color-line)] hover:bg-[var(--color-surface)]'
+        }`}
+      >
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--color-lav)] text-[15px] text-[var(--color-lav-ink)]">
+          ↺
+        </span>
+        <span className="min-w-0">
+          <span className="block text-[15px] font-medium">Replay your mistakes</span>
+          <span className="block text-[12px] text-[var(--color-ink-faint)]">
+            {progress.due > 0
+              ? `${progress.due} spot${progress.due === 1 ? '' : 's'} ready to try again`
+              : progress.pending > 0
+                ? `${progress.pending} saved · next one ready in ${formatWhen(progress.nextDueIn ?? 0)}`
+                : 'Nothing saved yet — misplayed hands land here automatically'}
+          </span>
+        </span>
+        {progress.due > 0 && (
+          <span className="tnum ml-auto rounded-full bg-[var(--color-lav)] px-3 py-1 text-[13px] font-medium text-[var(--color-lav-ink)]">
+            {progress.due}
+          </span>
+        )}
+        {progress.learned > 0 && (
+          <span className="ml-auto text-[12px] text-[var(--color-good)]">
+            {progress.learned} learned
+          </span>
+        )}
+      </button>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {DRILLS.map((d) => {
@@ -213,7 +300,31 @@ export default function DrillsPage() {
         </div>
       </Panel>
 
-      {!spot ? (
+      {!spot && reviewing ? (
+        <Panel>
+          <div className="py-10 text-center">
+            <p className="display text-[26px]">
+              {progress.pending > 0 ? 'Nothing ready just yet' : 'No mistakes saved yet'}
+            </p>
+            <p className="mx-auto mt-2 max-w-md text-[14px] leading-relaxed text-[var(--color-ink-muted)]">
+              {progress.pending > 0
+                ? `You have ${progress.pending} spot${progress.pending === 1 ? '' : 's'} waiting. The next one is ready in ${formatWhen(progress.nextDueIn ?? 0)} — leaving a gap is the point, since recalling something you had started to forget is what makes it stick.`
+                : 'Play some hands and any decision graded a mistake or worse gets saved here automatically, then comes back as a drill.'}
+            </p>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <Link
+                href="/play"
+                className="rounded-full bg-[var(--color-ink)] px-6 py-2.5 text-[14px] font-medium text-[var(--color-paper)] transition hover:bg-[#2c2a25]"
+              >
+                Go play some hands
+              </Link>
+              <Button tone="quiet" size="md" onClick={() => { setDrill('preflop'); loadSpot('preflop', tableSize); }}>
+                Try another drill
+              </Button>
+            </div>
+          </div>
+        </Panel>
+      ) : !spot ? (
         <Panel><p className="py-10 text-center text-[var(--color-ink-faint)]">Dealing…</p></Panel>
       ) : (
         <Panel>
@@ -340,6 +451,13 @@ export default function DrillsPage() {
             </>
           )}
 
+          {reviewing && !result && (
+            <p className="mb-4 rounded-lg bg-[var(--color-lav)]/25 px-3 py-2 text-[12px] leading-relaxed text-[var(--color-ink-muted)]">
+              This is a spot you got wrong before, rebuilt exactly — same cards, same opponents, and the
+              same read on what each of them was holding at the time.
+            </p>
+          )}
+
           {result && (
             <div className="rise mt-5 border-t border-[var(--color-line)] pt-4">
               <div className="flex flex-wrap items-center gap-2">
@@ -358,6 +476,67 @@ export default function DrillsPage() {
               </Button>
             </div>
           )}
+        </Panel>
+      )}
+      {progress.hands > 0 && (
+        <Panel className="mt-6">
+          <PanelTitle
+            right={
+              <button
+                onClick={() => {
+                  if (confirm('Clear all saved hands, stats and mistakes? This cannot be undone.')) {
+                    resetEverything();
+                    setDrill('preflop');
+                    loadSpot('preflop', tableSize);
+                  }
+                }}
+                className="text-[11px] text-[var(--color-ink-faint)] underline-offset-2 hover:text-[var(--color-bad)] hover:underline"
+              >
+                Clear everything
+              </button>
+            }
+          >
+            All time
+          </PanelTitle>
+          <div className="flex flex-wrap gap-x-10 gap-y-4">
+            <Stat label="Hands" value={progress.hands.toLocaleString()} size="sm" />
+            {progress.bb100 !== null && (
+              <Stat
+                label="Win rate"
+                value={`${progress.bb100 >= 0 ? '+' : ''}${progress.bb100.toFixed(0)}`}
+                sub="bb / 100 hands"
+                size="sm"
+                tone={progress.bb100 >= 0 ? 'good' : 'bad'}
+              />
+            )}
+            {progress.accuracy !== null && (
+              <Stat
+                label="Decisions right"
+                value={`${progress.accuracy.toFixed(0)}%`}
+                size="sm"
+                tone={progress.accuracy >= 70 ? 'good' : 'default'}
+              />
+            )}
+            <Stat label="EV given up" value={`${progress.evLostBB.toFixed(0)} bb`} size="sm" tone="warn" />
+            {progress.vpip !== null && (
+              <Stat
+                label="VPIP / PFR"
+                value={`${progress.vpip.toFixed(0)} / ${progress.pfr?.toFixed(0) ?? 0}`}
+                sub="tight is 20 / 16"
+                size="sm"
+              />
+            )}
+            <Stat
+              label="Saved spots"
+              value={`${progress.due + progress.pending}`}
+              sub={progress.learned > 0 ? `${progress.learned} learned` : 'none learned yet'}
+              size="sm"
+            />
+          </div>
+          <p className="mt-4 border-t border-[var(--color-line)] pt-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
+            Kept in this browser only — no account, nothing sent anywhere. Clearing your browser data
+            clears this too.
+          </p>
         </Panel>
       )}
     </div>
