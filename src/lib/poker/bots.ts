@@ -85,7 +85,7 @@ export const PERSONAS: BotPersona[] = [
       'street. They pay you off. This is the most profitable opponent in poker.',
     colour: '#84a98c',
     openPct: 0.50, callPct: 0.85, threeBetPct: 0.04,
-    aggression: 0.20, bluffFreq: 0.05, callLooseness: 1.7, betSizing: 0.45,
+    aggression: 0.20, bluffFreq: 0.05, callLooseness: 2.2, betSizing: 0.45,
   },
   {
     id: 'maniac',
@@ -212,79 +212,140 @@ function drawBonus(hole: Card[], board: Card[], weight: number): number {
   return bonus * weight;
 }
 
+export interface PolicyOption {
+  action: Action;
+  /** How often the bot takes this action in this exact spot, 0..1. */
+  prob: number;
+}
+
 /**
- * Pick this bot's action. Deterministic given the same random source, which is
- * what lets the grader replay the same situation reproducibly.
+ * The bot's COMPLETE strategy in this spot - every action it might take, and
+ * how often it takes each.
+ *
+ * Returning the whole distribution instead of one sampled action is the key
+ * design decision in this file, because it unlocks two separate features:
+ *
+ *  1. GRADING. To work out what your call is worth we replay the hand from here
+ *     thousands of times. Each replay needs a fresh sample from the bot's real
+ *     strategy, not a single frozen choice.
+ *
+ *  2. RANGE READING. We can run this BACKWARDS. Given that the bot just bet, we
+ *     ask "for each of the 1,326 hands it could hold, how likely was it to bet
+ *     that one?" - and that tells us what it probably has. That is exactly the
+ *     reasoning a good player does in their head, and here it falls out of the
+ *     same function that makes the decision.
  */
-export function botAction(state: HandState, persona: BotPersona, rng: () => number): Action {
+export function botPolicy(state: HandState, persona: BotPersona, hole?: Card[]): PolicyOption[] {
   const seat = state.toAct;
+  const cards = hole ?? state.hole[seat];
   const legal = legalActions(state);
-  if (legal.length === 0) return { type: 'check' };
+  if (legal.length === 0) return [];
 
   const need = toCall(state, seat);
   const canRaise = legal.find((a) => a.type === 'bet' || a.type === 'raise');
-  const strength = handStrength(state.hole[seat], state.board);
 
-  const raiseTo = (fraction: number): Action => {
-    if (!canRaise) return need > 0 ? { type: 'call' } : { type: 'check' };
+  const sized = (fraction: number): Action => {
     const target = Math.round(state.betToMatch + state.pot * fraction);
-    const clamped = Math.max(canRaise.min!, Math.min(canRaise.max!, target));
-    return { type: canRaise.type, amount: clamped };
+    return {
+      type: canRaise!.type,
+      amount: Math.max(canRaise!.min!, Math.min(canRaise!.max!, target)),
+    };
   };
 
+  // ---------- Before the flop ----------
   if (state.street === 0) {
-    const pct = preflopPercentile(handNotation(state.hole[seat][0], state.hole[seat][1]));
+    const pct = preflopPercentile(handNotation(cards[0], cards[1]));
 
     // Heads-up, the button posts the small blind and acts FIRST before the flop.
-    // So the button is always technically "facing a bet" - the big blind - even
-    // though nobody has actually raised. Treating that as a call-or-fold spot is
-    // wrong: it's an OPENING decision, and it's the single most common preflop
-    // spot in the game. We separate the two by looking at whether the bet has
-    // grown beyond the big blind.
+    // So the button is always nominally "facing a bet" - the big blind - even
+    // though nobody has raised. That is an OPENING decision, not a call-or-fold
+    // one, and it's the most common preflop spot in the game. We tell them apart
+    // by checking whether the bet has grown past the big blind.
     const facingRaise = state.betToMatch > state.bigBlind;
 
     if (need === 0) {
-      // Big blind with the option after a limp: raise our opening range or check.
-      if (pct <= persona.openPct && canRaise) return raiseTo(persona.betSizing);
-      return { type: 'check' };
+      // Big blind with the option after a limp.
+      if (pct <= persona.openPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
+      return [{ action: { type: 'check' }, prob: 1 }];
     }
 
     if (!facingRaise) {
-      if (pct <= persona.openPct && canRaise) return raiseTo(persona.betSizing);
-      // Limping - just calling the big blind - is a passive player's move.
-      // Aggressive types raise or fold, so only the passive personas do it.
+      if (pct <= persona.openPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
+      // Limping - flat-calling the big blind - is a passive player's move.
+      // Aggressive types raise or fold, so only passive personas do it.
       const limpTop = persona.aggression < 0.4 ? persona.callPct : 0;
-      if (pct <= limpTop) return { type: 'call' };
-      return { type: 'fold' };
+      if (pct <= limpTop) return [{ action: { type: 'call' }, prob: 1 }];
+      return [{ action: { type: 'fold' }, prob: 1 }];
     }
 
-    // Now we really are facing a raise.
-    if (pct <= persona.threeBetPct && canRaise) return raiseTo(persona.betSizing);
+    if (pct <= persona.threeBetPct && canRaise) return [{ action: sized(persona.betSizing), prob: 1 }];
     const priceBonus = need <= state.bigBlind ? 0.15 : 0;
-    if (pct <= persona.callPct + priceBonus) return { type: 'call' };
-    return { type: 'fold' };
+    if (pct <= persona.callPct + priceBonus) return [{ action: { type: 'call' }, prob: 1 }];
+    return [{ action: { type: 'fold' }, prob: 1 }];
   }
 
-  // --- After the flop ---
+  // ---------- After the flop ----------
+  const strength = handStrength(cards, state.board);
+  const out: PolicyOption[] = [];
+
   if (need === 0) {
-    if (strength >= 0.55 && rng() < persona.aggression) return raiseTo(persona.betSizing);
-    // Betting with a draw is a "semi-bluff": you might win right now, and if
-    // called you still have a way to win later. It's the best kind of bluff.
-    if (strength >= 0.30 && strength < 0.55 && rng() < persona.aggression * 0.45) {
-      return raiseTo(persona.betSizing * 0.7);
+    let pBet: number;
+    if (strength >= 0.55) {
+      pBet = persona.aggression; // betting for value
+    } else if (strength >= 0.30) {
+      // A semi-bluff: might win right now, and still has outs if called. This is
+      // the most profitable kind of bluff there is.
+      const semi = persona.aggression * 0.45;
+      pBet = semi + (1 - semi) * persona.bluffFreq;
+    } else {
+      pBet = persona.bluffFreq; // nothing at all, pure bluff
     }
-    if (rng() < persona.bluffFreq) return raiseTo(persona.betSizing * 0.8);
-    return { type: 'check' };
+    if (!canRaise) pBet = 0;
+    if (pBet > 0) out.push({ action: sized(strength >= 0.55 ? persona.betSizing : persona.betSizing * 0.75), prob: pBet });
+    out.push({ action: { type: 'check' }, prob: 1 - pBet });
+    return out.filter((o) => o.prob > 1e-9);
   }
 
-  // Facing a bet. Compare what we think we have against the price being asked.
-  const need_ = requiredEquity(need, state.pot);
-  const adjusted = strength * persona.callLooseness;
+  // Facing a bet.
+  let pRaise = 0;
+  if (strength >= 0.80) pRaise = persona.aggression;
+  else if (strength >= 0.35 && strength < 0.55) pRaise = persona.bluffFreq * 0.4;
+  if (!canRaise) pRaise = 0;
+  if (pRaise > 0) out.push({ action: sized(persona.betSizing), prob: pRaise });
 
-  if (strength >= 0.80 && canRaise && rng() < persona.aggression) return raiseTo(persona.betSizing);
-  if (strength >= 0.35 && strength < 0.55 && canRaise && rng() < persona.bluffFreq * 0.4) {
-    return raiseTo(persona.betSizing); // semi-bluff raise with a draw
+  // Whether the rest of the time is a call or a fold comes down to the price.
+  // callLooseness above 1 is what makes a calling station call when the pot
+  // odds say they shouldn't.
+  const priceNeeded = requiredEquity(need, state.pot);
+  const continues = strength * persona.callLooseness >= priceNeeded;
+  out.push({ action: continues ? { type: 'call' } : { type: 'fold' }, prob: 1 - pRaise });
+  return out.filter((o) => o.prob > 1e-9);
+}
+
+/** Sample one action from the bot's strategy. */
+export function botAction(state: HandState, persona: BotPersona, rng: () => number): Action {
+  const policy = botPolicy(state, persona);
+  if (policy.length === 0) return { type: 'check' };
+  let r = rng();
+  for (const option of policy) {
+    r -= option.prob;
+    if (r <= 0) return option.action;
   }
-  if (adjusted >= need_) return { type: 'call' };
-  return { type: 'fold' };
+  return policy[policy.length - 1].action;
+}
+
+/**
+ * How likely was this bot to take the action it just took, holding these exact
+ * cards? Feeding this through every possible holding is how we read its range.
+ */
+export function actionProbability(
+  state: HandState,
+  persona: BotPersona,
+  hole: Card[],
+  taken: Action
+): number {
+  const policy = botPolicy(state, persona, hole);
+  let p = 0;
+  for (const option of policy) if (option.action.type === taken.type) p += option.prob;
+  return p;
 }
